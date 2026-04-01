@@ -14,178 +14,131 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
-// ════════════════════════════════════════════════
-//  SUPABASE YAPILANDIRMASI
-// ════════════════════════════════════════════════
-const SUPABASE_URL  = 'https://vbamfndggmuwtbxavnbt.supabase.co';
-const SUPABASE_KEY  = 'sb_publishable_eSJz4uxUcV3YMh0TiZV0vQ_JeJTEYhF';
-const _supa = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+// ════════════════════════════════════════════════════════
+//  SUPABASE — Gerçek Zamanlı Bildirim Sistemi
+// ════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════
+//  SUPABASE — YENİ PROJE BİLGİLERİ
+// ════════════════════════════════════════════════════════
+const SUPA_URL = 'https://cketqzlxxdvhohwxfgotx.supabase.co';
+const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrZXRxemx4eGR2b2h3eGZnb3R4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUwMzQ0NjUsImV4cCI6MjA5MDYxMDQ2NX0.Gz93jQ3mGPlKdnn28PwCLBeGVYsSbwW-FdCyttEDyAk';
+const _db = supabase.createClient(SUPA_URL, SUPA_KEY);
 
-// ── Kullanıcı Kimliği (localStorage UUID — anonim, kalıcı) ──
 function getOrCreateUID() {
   let uid = localStorage.getItem('bkr_uid');
-  if (!uid) {
-    uid = 'u_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
-    localStorage.setItem('bkr_uid', uid);
-  }
+  if (!uid) { uid = 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); localStorage.setItem('bkr_uid', uid); }
   return uid;
 }
 const MY_UID = getOrCreateUID();
+window.__supaReports = {};
 
-// ════════════════════════════════════════════════
-//  GERÇEK ZAMANLI DİNLEYİCİ
-//  reports tablosundaki değişiklikleri anlık al
-// ════════════════════════════════════════════════
 function startSupabaseListener() {
-  _supa
-    .channel('reports-channel')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'reports' }, payload => {
-      fetchAndSyncReports();
-    })
-    .subscribe();
-
-  // İlk yüklemede de çek
-  fetchAndSyncReports();
+  _db.channel('rpt').on('postgres_changes', { event:'*', schema:'public', table:'reports' }, () => fetchReports()).subscribe();
+  fetchReports();
 }
 
-async function fetchAndSyncReports() {
-  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-  const { data, error } = await _supa
-    .from('reports')
-    .select('*')
-    .gte('updated_at', twoHoursAgo)
-    .order('updated_at', { ascending: false });
-
-  if (error) { console.error('Supabase fetch hatası:', error); return; }
-
-  // communityReports'u güncelle
-  communityReports = { delay: {}, breakdown: {}, kalabalik: {} };
+async function fetchReports() {
+  const since = new Date(Date.now() - 2*60*60*1000).toISOString();
+  const { data } = await _db.from('reports').select('*').gte('updated_at', since).order('updated_at', { ascending: false });
+  if (!data) return;
   window.__supaReports = {};
-
-  (data || []).forEach(r => {
-    // Reddedilmiş bildirimleri gösterme
-    if ((r.retler || 0) >= (r.onaylar || 0) + 2) return;
-
+  const delay = {}, breakdown = {};
+  data.forEach(r => {
+    if ((r.retler||0) >= (r.onaylar||0) + 2) return;
     window.__supaReports[r.id] = r;
-
-    const station = r.istasyon;
-    const key = r.tip === 'arıza' ? 'breakdown' : r.tip === 'kalabalık' ? 'kalabalik' : 'delay';
-    if (!communityReports[key][station]) {
-      communityReports[key][station] = { count: 0, onaylar: 0, ids: [] };
-    }
-    communityReports[key][station].count++;
-    communityReports[key][station].onaylar += (r.onaylar || 0);
-    communityReports[key][station].ids.push(r.id);
+    const st = r.istasyon;
+    const bucket = r.tip === 'arıza' ? breakdown : delay;
+    if (!bucket[st]) bucket[st] = { count:0, onaylar:0 };
+    bucket[st].count++; bucket[st].onaylar += (r.onaylar||0);
   });
-
-  updateBigAlertCard();
-  updateCommunityPanel();
+  if (typeof communityReports !== 'undefined') { communityReports.delay = delay; communityReports.breakdown = breakdown; }
+  if (typeof updateBigAlertCard   === 'function') updateBigAlertCard();
+  if (typeof updateCommunityPanel === 'function') updateCommunityPanel();
+  if (typeof buildArizaPage === 'function' && typeof curPageIdx !== 'undefined' && curPageIdx === 4) buildArizaPage();
 }
 
-// ════════════════════════════════════════════════
-//  BİLDİRİM GÖNDER / GÜNCELLE
-// ════════════════════════════════════════════════
-window.sbSendReport = async function({ tip, istasyon, seferSaati, hat, aciklama }) {
-  // Günlük limit kontrolü
+window.sbSend = async function({ tip, istasyon, seferSaati, hat, aciklama, gec_dk }) {
   const dayKey = 'bkr_day_' + new Date().toDateString();
-  const count  = parseInt(localStorage.getItem(dayKey) || '0');
-  if (count >= 10) { showToast('🚫 Günlük 10 bildirim limitine ulaştınız'); return false; }
-
-  // Composite key: aynı kullanıcı + aynı hat + aynı sefer = güncelle
-  const compositeKey = MY_UID + '_' + hat + '_' + seferSaati;
-
-  // Önce bu key'e sahip kayıt var mı kontrol et
-  const { data: existing } = await _supa
-    .from('reports')
-    .select('id, tip')
-    .eq('composite_key', compositeKey)
-    .maybeSingle();
-
-  if (existing) {
-    // GÜNCELLE — aynı kullanıcı aynı sefer
-    const { error } = await _supa
-      .from('reports')
-      .update({ tip, aciklama, updated_at: new Date().toISOString() })
-      .eq('id', existing.id);
-    if (error) { console.error(error); return false; }
+  const cnt = parseInt(localStorage.getItem(dayKey)||'0');
+  if (cnt >= 10) { showToast('🚫 Günlük 10 bildirim limitine ulaştınız'); return false; }
+  const ck = (MY_UID+'_'+hat+'_'+seferSaati).replace(/[^a-zA-Z0-9_]/g,'_');
+  const { data: ex } = await _db.from('reports').select('id').eq('composite_key', ck).maybeSingle();
+  if (ex) {
+    await _db.from('reports').update({ tip, aciklama, gec_dk: gec_dk||null, updated_at: new Date().toISOString() }).eq('id', ex.id);
     return 'updated';
   } else {
-    // YENİ KAYIT
-    const { error } = await _supa
-      .from('reports')
-      .insert({
-        uid:           MY_UID,
-        composite_key: compositeKey,
-        tip,
-        istasyon,
-        sefer_saati:   seferSaati,
-        hat,
-        aciklama:      (aciklama || '').slice(0, 200),
-        onaylar:       0,
-        retler:        0,
-        onaylayanlar:  [],
-        reddedenler:   [],
-        created_at:    new Date().toISOString(),
-        updated_at:    new Date().toISOString()
-      });
+    const { error } = await _db.from('reports').insert({
+      uid: MY_UID, composite_key: ck, tip,
+      istasyon, sefer_saati: seferSaati, hat,
+      aciklama: (aciklama||'').slice(0,200),
+      gec_dk: gec_dk||null,
+      onaylar:0, retler:0, onaylayanlar:[], reddedenler:[],
+      created_at: new Date().toISOString(), updated_at: new Date().toISOString()
+    });
     if (error) { console.error(error); return false; }
-    localStorage.setItem(dayKey, count + 1);
+    localStorage.setItem(dayKey, cnt+1);
     return 'created';
   }
 };
 
-// ════════════════════════════════════════════════
-//  OY VER (onay / ret)
-// ════════════════════════════════════════════════
-window.sbVoteReport = async function(reportId, voteType) {
-  const { data: r, error } = await _supa
-    .from('reports')
-    .select('uid, onaylar, retler, onaylayanlar, reddedenler')
-    .eq('id', reportId)
-    .single();
-
-  if (error || !r) return;
-
-  // Kendi bildirimine oy veremezsin
+window.sbVote = async function(id, voteType) {
+  const { data:r } = await _db.from('reports').select('*').eq('id', id).single();
+  if (!r) return;
   if (r.uid === MY_UID) { showToast('🚫 Kendi bildiriminize oy veremezsiniz'); return; }
-
-  // Daha önce oy verdiysen
-  const onaylayanlar = r.onaylayanlar || [];
-  const reddedenler  = r.reddedenler  || [];
-  if (onaylayanlar.includes(MY_UID) || reddedenler.includes(MY_UID)) {
-    showToast('⚠️ Bu bildirime zaten oy verdiniz'); return;
-  }
-
-  if (voteType === 'onay') {
-    await _supa.from('reports').update({
-      onaylar:      (r.onaylar || 0) + 1,
-      onaylayanlar: [...onaylayanlar, MY_UID],
-      updated_at:   new Date().toISOString()
-    }).eq('id', reportId);
+  const oy = r.onaylayanlar||[], ret = r.reddedenler||[];
+  if (oy.includes(MY_UID)||ret.includes(MY_UID)) { showToast('⚠️ Zaten oy verdiniz'); return; }
+  if (voteType==='onay') {
+    await _db.from('reports').update({ onaylar:(r.onaylar||0)+1, onaylayanlar:[...oy,MY_UID], updated_at:new Date().toISOString() }).eq('id',id);
     showToast('✅ Onaylandı');
   } else {
-    await _supa.from('reports').update({
-      retler:      (r.retler || 0) + 1,
-      reddedenler: [...reddedenler, MY_UID],
-      updated_at:  new Date().toISOString()
-    }).eq('id', reportId);
+    await _db.from('reports').update({ retler:(r.retler||0)+1, reddedenler:[...ret,MY_UID], updated_at:new Date().toISOString() }).eq('id',id);
     showToast('👎 Reddedildi');
   }
 };
 
-// Sayfa yüklenince başlat
 window.addEventListener('DOMContentLoaded', () => {
   startSupabaseListener();
-  // UID rozetini göster
-  const badge = document.getElementById('userBadge');
-  const span  = document.getElementById('userBadgeUID');
-  if (badge && span) { span.textContent = MY_UID.slice(0,12) + '...'; badge.style.display = 'block'; }
+  const b = document.getElementById('userBadge'), s = document.getElementById('userBadgeUID');
+  if (b && s) { s.textContent = MY_UID.slice(0,10)+'...'; b.style.display='block'; }
 });
 </script>
 <style>
+/* ── PWA KURULUM BANNER ── */
+.pwa-install-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.82);z-index:400;align-items:center;justify-content:center;padding:20px}
+.pwa-install-overlay.open{display:flex}
+.pwa-install-box{background:linear-gradient(160deg,#0d1d35,#091427);border:2px solid #2563eb;border-radius:24px;padding:32px 24px;max-width:360px;width:100%;text-align:center;position:relative}
+.pwa-icon-big{width:80px;height:80px;border-radius:22px;margin:0 auto 16px;display:block}
+.pwa-app-name{font-size:26px;font-weight:900;background:linear-gradient(90deg,#38bdf8,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:6px}
+.pwa-app-sub{font-size:13px;color:var(--text3);margin-bottom:24px}
+.pwa-install-btn{width:100%;background:linear-gradient(135deg,#1d4ed8,#2563eb);border:none;border-radius:16px;padding:16px;font-size:16px;font-weight:800;color:#fff;cursor:pointer;margin-bottom:10px;display:flex;align-items:center;justify-content:center;gap:10px}
+.pwa-ios-steps{background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:12px;padding:14px;text-align:left;margin-bottom:12px}
+.pwa-ios-step{display:flex;align-items:flex-start;gap:10px;font-size:13px;color:var(--text2);padding:5px 0}
+.pwa-ios-step-num{background:rgba(37,99,235,0.3);color:var(--blue3);border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:11px;flex-shrink:0;margin-top:1px}
+.pwa-skip-btn{background:none;border:1px solid var(--border);border-radius:12px;padding:10px 20px;color:var(--text3);font-size:13px;cursor:pointer;width:100%}
+
+/* ── BİLDİRİM MODAL ── */
+@keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+.rp-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.78);z-index:300;align-items:flex-end;justify-content:center}
+.rp-modal.open{display:flex}
+.rp-inner{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r) var(--r) 0 0;width:100%;max-width:430px;max-height:92vh;overflow-y:auto;padding:22px 20px 44px;animation:slideUp .28s ease}
+.rp-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:7px}
+.rtype-btn{background:var(--card2);border:1.5px solid var(--border);border-radius:var(--r3);padding:11px 8px;font-size:13px;font-weight:600;color:var(--text2);cursor:pointer;width:100%;transition:all .15s;text-align:center}
+.rtype-btn.sel{background:rgba(37,99,235,0.22);border-color:var(--blue3);color:var(--blue3)}
+.train-pill{padding:8px 14px;border-radius:20px;font-size:12px;font-weight:700;background:var(--card2);border:1.5px solid var(--border);color:var(--text2);cursor:pointer;transition:all .15s;white-space:nowrap}
+.train-pill.sel{background:rgba(245,158,11,0.2);border-color:var(--amber2);color:var(--amber2)}
+.train-pill.past{opacity:0.65}
+.gecikme-select{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r3);padding:10px 12px;color:var(--text);font-size:13px;outline:none;appearance:none;cursor:pointer;margin-bottom:14px}
+.gecikme-select option{background:var(--bg3);color:var(--text)}
+
+/* ── OY BUTONLARI ── */
+.vote-btn{padding:5px 11px;border-radius:12px;border:1px solid;font-size:11px;font-weight:600;cursor:pointer;background:transparent}
+.vote-btn.onay{border-color:rgba(16,185,129,0.5);color:var(--green2)}
+.vote-btn.ret{border-color:rgba(239,68,68,0.5);color:var(--red2)}
+
+/* ── KULLANICI ROZET ── */
+#userBadge{display:none;position:fixed;bottom:90px;right:10px;background:rgba(5,12,26,0.92);border:1px solid var(--border2);border-radius:20px;padding:4px 10px;font-size:10px;color:var(--text3);z-index:50;backdrop-filter:blur(8px)}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 :root{--bg:#050c1a;--bg2:#091427;--bg3:#0d1d35;--bg4:#112240;--blue:#2563eb;--blue2:#3b82f6;--blue3:#60a5fa;--blue4:#93c5fd;--green:#10b981;--green2:#34d399;--amber:#f59e0b;--amber2:#fbbf24;--red:#ef4444;--red2:#f87171;--text:#f1f5f9;--text2:#94a3b8;--text3:#475569;--border:rgba(255,255,255,0.07);--border2:rgba(255,255,255,0.12);--card:rgba(255,255,255,0.03);--card2:rgba(255,255,255,0.06);--r:16px;--r2:12px;--r3:8px}
 body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden}
@@ -255,8 +208,8 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
 .next-stop{font-size:16px;font-weight:800;color:var(--amber2);margin-top:2px}
 .next-eta-val{font-size:24px;font-weight:900;color:var(--green2);line-height:1}
 
-.stop-hero{padding:12px 16px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
-.sh-name{font-size:24px;font-weight:900}
+.stop-hero{padding:14px 16px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.sh-name{font-size:30px;font-weight:900;background:linear-gradient(90deg,#38bdf8,#a78bfa,#34d399);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:0.5px}
 .sh-sec-clock{display:flex;align-items:flex-end;gap:8px}
 .sh-sec-time{font-size:24px;font-weight:800;font-variant-numeric:tabular-nums}
 .sh-sec-s{font-size:11px;color:var(--text3)}
@@ -392,12 +345,12 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
 .ns-name{font-size:13px;font-weight:700}
 .ns-distance{font-size:12px;color:var(--green2);font-weight:600}
 
-.loc-toggle-bar{display:flex;align-items:center;justify-content:space-between;margin:8px 16px 4px;padding:10px 14px;background:rgba(6,182,212,0.07);border:1px solid rgba(6,182,212,0.25);border-radius:var(--r2)}
-.loc-toggle-label{font-size:13px;font-weight:700;color:#22d3ee}
-.loc-toggle-btn{display:flex;align-items:center;gap:7px;padding:7px 16px;border-radius:20px;border:1.5px solid rgba(71,85,105,0.5);background:rgba(71,85,105,0.2);cursor:pointer;font-size:12px;font-weight:700;color:var(--text3);transition:all .25s ease}
-.loc-toggle-btn.active{border-color:rgba(6,182,212,0.6);background:rgba(6,182,212,0.18);color:#22d3ee}
-.loc-btn-dot{width:8px;height:8px;border-radius:50%;background:var(--text3);transition:background .25s ease}
-.loc-toggle-btn.active .loc-btn-dot{background:#22d3ee;box-shadow:0 0 6px #22d3ee;animation:pulseGreen 1s infinite}
+.loc-toggle-bar{display:flex;align-items:center;justify-content:space-between;margin:10px 16px 6px;padding:14px 16px;background:rgba(6,182,212,0.09);border:1.5px solid rgba(6,182,212,0.35);border-radius:var(--r2)}
+.loc-toggle-label{font-size:14px;font-weight:800;color:#22d3ee}
+.loc-toggle-btn{display:flex;align-items:center;gap:8px;padding:10px 20px;border-radius:24px;border:2px solid rgba(71,85,105,0.6);background:rgba(71,85,105,0.25);cursor:pointer;font-size:14px;font-weight:800;color:var(--text3);transition:all .25s ease;box-shadow:0 2px 8px rgba(0,0,0,0.3)}
+.loc-toggle-btn.active{border-color:rgba(6,182,212,0.8);background:rgba(6,182,212,0.22);color:#22d3ee;box-shadow:0 0 16px rgba(6,182,212,0.3)}
+.loc-btn-dot{width:10px;height:10px;border-radius:50%;background:var(--text3);transition:background .25s ease}
+.loc-toggle-btn.active .loc-btn-dot{background:#22d3ee;box-shadow:0 0 8px #22d3ee;animation:pulseGreen 1s infinite}
 
 .about-container{padding:16px}
 .about-header{text-align:center;margin-bottom:24px}
@@ -436,19 +389,6 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
 .ct-toast{position:fixed;bottom:90px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r2);padding:12px 20px;font-size:13px;z-index:999;opacity:0;transition:all .3s ease;white-space:nowrap;pointer-events:none;max-width:90%}
 .ct-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 
-/* MODAL */
-@keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
-.report-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:200;align-items:flex-end;justify-content:center}
-.report-modal.open{display:flex}
-.report-modal-inner{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r) var(--r) 0 0;width:100%;max-width:430px;padding:24px 20px 40px;animation:slideUp .3s ease}
-.rtype-btn{background:var(--card2);border:1.5px solid var(--border);border-radius:var(--r3);padding:10px 8px;font-size:13px;font-weight:600;color:var(--text2);cursor:pointer;text-align:center;transition:all .15s ease;width:100%}
-.rtype-btn.selected{background:rgba(37,99,235,0.25);border-color:var(--blue3);color:var(--blue3)}
-.train-pill{padding:6px 14px;border-radius:20px;font-size:12px;font-weight:700;background:var(--card2);border:1.5px solid var(--border);color:var(--text2);cursor:pointer;transition:all .15s ease}
-.train-pill.selected{background:rgba(245,158,11,0.2);border-color:var(--amber2);color:var(--amber2)}
-.vote-btn{padding:4px 10px;border-radius:12px;border:1px solid;font-size:11px;font-weight:600;cursor:pointer;background:transparent}
-.vote-btn.onay{border-color:rgba(16,185,129,0.5);color:var(--green2)}
-.vote-btn.ret{border-color:rgba(239,68,68,0.5);color:var(--red2)}
-
 /* PWA Bildirim */
 .install-banner{display:none;position:fixed;top:0;left:0;right:0;background:linear-gradient(135deg,#0f172a,#1e293b);border-bottom:1px solid #22d3ee;padding:12px 16px;z-index:100;align-items:center;justify-content:space-between;box-shadow:0 4px 20px rgba(0,0,0,0.3)}
 .install-banner p{font-size:13px;font-weight:600;color:#22d3ee}
@@ -466,33 +406,101 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
   </div>
 </div>
 
-<!-- BİLDİRİM MODAL -->
-<div id="reportModal" class="report-modal" onclick="if(event.target===this)closeReportModal()">
-  <div class="report-modal-inner">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
-      <div style="font-size:16px;font-weight:800">⚠️ Bildirim Gönder</div>
-      <button onclick="closeReportModal()" style="background:var(--bg4);border:none;color:var(--text2);font-size:18px;width:32px;height:32px;border-radius:50%;cursor:pointer">✕</button>
+<!-- ════ PWA KURULUM OVERLAY ════ -->
+<div id="pwaOverlay" class="pwa-install-overlay">
+  <div class="pwa-install-box">
+    <button onclick="closePwaOverlay()" style="position:absolute;top:14px;right:14px;background:rgba(255,255,255,0.08);border:none;color:var(--text2);width:30px;height:30px;border-radius:50%;font-size:16px;cursor:pointer">✕</button>
+    <img src="icons/icon-192.png" class="pwa-icon-big" onerror="this.style.display='none'">
+    <div class="pwa-app-name">🚆 BAŞKENTRAY</div>
+    <div class="pwa-app-sub">Ankara Banliyö Treni • Ücretsiz Uygulama</div>
+
+    <!-- Android / Chrome butonu -->
+    <button class="pwa-install-btn" id="pwaAndroidBtn" style="display:none" onclick="triggerPwaInstall()">
+      <span style="font-size:22px">📲</span>
+      <span>Ana Ekrana Ekle</span>
+    </button>
+
+    <!-- iOS talimatları -->
+    <div id="pwaIosSteps" style="display:none">
+      <div class="pwa-ios-steps">
+        <div style="font-size:12px;font-weight:800;color:var(--blue3);margin-bottom:10px">iPhone / iPad için kurulum:</div>
+        <div class="pwa-ios-step"><div class="pwa-ios-step-num">1</div><div>Safari'de alttaki <strong>Paylaş</strong> butonuna bas <span style="font-size:16px">⎙</span></div></div>
+        <div class="pwa-ios-step"><div class="pwa-ios-step-num">2</div><div><strong>"Ana Ekrana Ekle"</strong> seçeneğine dokun</div></div>
+        <div class="pwa-ios-step"><div class="pwa-ios-step-num">3</div><div>Sağ üstteki <strong>"Ekle"</strong> butonuna bas</div></div>
+      </div>
     </div>
-    <div style="font-size:11px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:1px">Durak / Hat</div>
-    <div id="rModalStation" style="font-size:15px;font-weight:700;color:var(--amber2);margin-bottom:16px">—</div>
-    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;text-transform:uppercase;letter-spacing:1px">Bildirim Türü</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">
-      <button class="rtype-btn" data-type="gecikmeli" onclick="selectRType(this)">⏰ Gecikme</button>
-      <button class="rtype-btn" data-type="arıza"     onclick="selectRType(this)">⚠️ Arıza</button>
-      <button class="rtype-btn" data-type="iptal"     onclick="selectRType(this)">🚫 İptal</button>
-      <button class="rtype-btn" data-type="kalabalık" onclick="selectRType(this)">👥 Kalabalık</button>
+
+    <!-- Genel talimatlar (fallback) -->
+    <div id="pwaGeneralSteps" style="display:none">
+      <div class="pwa-ios-steps">
+        <div style="font-size:12px;font-weight:800;color:var(--blue3);margin-bottom:10px">Tarayıcı menüsünden kurulum:</div>
+        <div class="pwa-ios-step"><div class="pwa-ios-step-num">1</div><div>Tarayıcının <strong>⋮ menüsü</strong>ne gir</div></div>
+        <div class="pwa-ios-step"><div class="pwa-ios-step-num">2</div><div><strong>"Ana ekrana ekle"</strong> veya <strong>"Uygulamayı yükle"</strong> seç</div></div>
+      </div>
     </div>
-    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;text-transform:uppercase;letter-spacing:1px">Hangi Sefer?</div>
-    <div id="rModalTrains" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px"></div>
-    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;text-transform:uppercase;letter-spacing:1px">Açıklama (isteğe bağlı)</div>
-    <textarea id="rModalDesc" placeholder="Detay ekleyebilirsiniz..." style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r3);padding:10px 12px;color:var(--text);font-size:13px;resize:none;height:68px;outline:none;margin-bottom:16px;font-family:inherit"></textarea>
-    <button id="rModalSendBtn" onclick="submitReport()" style="width:100%;background:linear-gradient(135deg,#1d4ed8,#2563eb);border:none;color:#fff;font-size:14px;font-weight:700;padding:14px;border-radius:var(--r2);cursor:pointer">📤 Bildirimi Gönder</button>
-    <div id="rModalMsg" style="text-align:center;font-size:12px;color:var(--text3);margin-top:10px;min-height:18px"></div>
+
+    <button class="pwa-skip-btn" onclick="closePwaOverlay()">Şimdi değil</button>
   </div>
 </div>
 
-<!-- KULLANICI KİMLİK ROZET -->
-<div id="userBadge" style="display:none;position:fixed;bottom:90px;right:12px;background:rgba(9,20,39,0.92);border:1px solid var(--border2);border-radius:20px;padding:4px 10px;font-size:10px;color:var(--text3);z-index:50;backdrop-filter:blur(8px)">🔑 <span id="userBadgeUID">—</span></div>
+<!-- ════ BİLDİRİM MODAL ════ -->
+<div id="rpModal" class="rp-modal" onclick="if(event.target===this)closeRpModal()">
+  <div class="rp-inner">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <div style="font-size:16px;font-weight:800">⚠️ Bildirim Gönder</div>
+      <button onclick="closeRpModal()" style="background:var(--bg4);border:none;color:var(--text2);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">✕</button>
+    </div>
+
+    <!-- Durak -->
+    <div class="rp-label">Durak / Hat</div>
+    <div id="rpStation" style="font-size:15px;font-weight:700;color:var(--amber2);margin-bottom:14px">—</div>
+
+    <!-- Yön seçimi -->
+    <div class="rp-label">Yön</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
+      <button class="rtype-btn sel" id="rpDir0" onclick="selectRpDir(0)">🔵 Sincan→Kayaş</button>
+      <button class="rtype-btn"    id="rpDir1" onclick="selectRpDir(1)">🔴 Kayaş→Sincan</button>
+    </div>
+
+    <!-- Bildirim türü -->
+    <div class="rp-label">Bildirim Türü</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
+      <button class="rtype-btn" data-type="gecikmeli" onclick="selectRpType(this)">⏰ Gecikme</button>
+      <button class="rtype-btn" data-type="arıza"     onclick="selectRpType(this)">⚠️ Arıza</button>
+      <button class="rtype-btn" data-type="gelmedi"   onclick="selectRpType(this)">🚫 Tren Gelmedi</button>
+      <button class="rtype-btn" data-type="kalabalık" onclick="selectRpType(this)">👥 Kalabalık</button>
+    </div>
+
+    <!-- Gecikme süresi (sadece gecikme seçilince görünür) -->
+    <div id="rpGecDiv" style="display:none">
+      <div class="rp-label">Kaç dakika gecikmeli?</div>
+      <select id="rpGecDk" class="gecikme-select">
+        <option value="">Bilmiyorum</option>
+        <option value="5">~5 dakika</option>
+        <option value="10">~10 dakika</option>
+        <option value="15">~15 dakika</option>
+        <option value="20">~20 dakika</option>
+        <option value="30">~30 dakika</option>
+        <option value="45">~45 dakika</option>
+        <option value="60">~1 saat+</option>
+      </select>
+    </div>
+
+    <!-- Sefer saati — geriye dönük 2 saat dahil -->
+    <div class="rp-label">Hangi Sefer? <span style="color:var(--text3);font-size:10px">(son 2 saat dahil)</span></div>
+    <div id="rpTrains" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;max-height:120px;overflow-y:auto"></div>
+
+    <!-- Açıklama -->
+    <div class="rp-label">Açıklama (isteğe bağlı)</div>
+    <textarea id="rpDesc" placeholder="Detay ekleyebilirsiniz..." style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r3);padding:10px 12px;color:var(--text);font-size:13px;resize:none;height:62px;outline:none;margin-bottom:14px;font-family:inherit"></textarea>
+
+    <button id="rpSendBtn" onclick="submitRpModal()" style="width:100%;background:linear-gradient(135deg,#1d4ed8,#2563eb);border:none;color:#fff;font-size:14px;font-weight:700;padding:14px;border-radius:var(--r2);cursor:pointer">📤 Bildirimi Gönder</button>
+    <div id="rpMsg" style="text-align:center;font-size:12px;color:var(--text3);margin-top:10px;min-height:18px"></div>
+  </div>
+</div>
+
+<!-- Kullanıcı kimlik rozeti -->
+<div id="userBadge">🔑 <span id="userBadgeUID">—</span></div>
 
 <div class="app">
   <div class="header">
@@ -602,11 +610,26 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
           <div class="map-collapsible-header" onclick="toggleMapCollapse()">
             <div class="map-collapsible-title">
               <span>🗺️</span> Harita
+              <span id="trainCountBadge" style="background:rgba(59,130,246,0.25);border:1px solid rgba(59,130,246,0.5);color:#60a5fa;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;margin-left:8px">0 tren</span>
             </div>
             <span class="map-collapsible-icon" id="mapCollapseIcon">▼</span>
           </div>
           <div class="map-collapsible-content" id="mapCollapseContent">
             <div id="mapContainer" class="map-container"></div>
+            <div style="display:flex;gap:10px;padding:8px 12px;flex-wrap:wrap;border-top:1px solid var(--border)">
+              <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text2)">
+                <div style="width:10px;height:10px;border-radius:50%;background:#3b82f6;flex-shrink:0"></div>
+                Tarifeden (simüle)
+              </div>
+              <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text2)">
+                <div style="width:10px;height:10px;border-radius:50%;background:#10b981;flex-shrink:0"></div>
+                Canlı GPS (yolcu)
+              </div>
+              <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text2)">
+                <div style="width:10px;height:10px;border-radius:50%;background:#10b981;border:2px solid #fff;flex-shrink:0"></div>
+                Siz buradasınız
+              </div>
+            </div>
           </div>
         </div>
 
@@ -623,7 +646,7 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
                 <span class="community-icon">👥</span>
                 <span class="community-title">Topluluk Bildirimleri</span>
                 <span class="community-status" id="communityStatus">Konum kapalı</span>
-                <button onclick="openReportModal(curStop,null)" style="background:rgba(37,99,235,0.3);border:1px solid var(--blue3);border-radius:12px;padding:4px 10px;font-size:11px;font-weight:700;color:var(--blue3);cursor:pointer;margin-left:6px">+ Bildir</button>
+                <button onclick="openRpModal(curStop,null)" style="background:rgba(37,99,235,0.3);border:1px solid var(--blue3);border-radius:12px;padding:4px 10px;font-size:11px;font-weight:700;color:var(--blue3);cursor:pointer;margin-left:4px">+ Bildir</button>
               </div>
               <div class="community-list" id="communityList">
                 <div class="empty-community">📍 Konum takibini aktif edin</div>
@@ -641,10 +664,16 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
         <div class="fav-list" id="favList"></div>
       </div>
 
-      <!-- YAKLAŞAN PAGE -->
-      <div id="page-nearby" class="page">
-        <div class="page-header">🔔 YAKLAŞAN TRENLER (30 dk)</div>
-        <div class="nearby-list" id="nearbyList"></div>
+      <!-- ARIZA BİLDİR PAGE -->
+      <div id="page-ariza" class="page">
+        <div class="page-header">🚨 ARİZA & GECİKME BİLDİR</div>
+        <div id="arizaContent">
+          <div class="empty" style="padding:2rem 16px;text-align:center">
+            <div style="font-size:48px;margin-bottom:12px">📍</div>
+            <div style="font-size:14px;font-weight:700;color:var(--text2);margin-bottom:8px">Konum Takibi Kapalı</div>
+            <div style="font-size:12px;color:var(--text3)">Arıza veya gecikme bildirmek için konum takibini aktif edin.</div>
+          </div>
+        </div>
       </div>
 
       <!-- HAKKINDA PAGE -->
@@ -654,6 +683,21 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
             <div class="about-logo">🚆</div>
             <div class="about-title">BAŞKENTRAY</div>
             <div class="about-sub">Ankara Banliyö Treni • TCDD Resmi Tarifesi</div>
+          </div>
+
+          <div class="dev-info" style="margin-bottom:16px">
+            <div class="dev-photo">👨‍💻</div>
+            <div class="dev-name">EREN SARIGÜL</div>
+            <div class="dev-title">Bilgisayar Mühendisi</div>
+            <div class="dev-uni">📍 Ankara, Türkiye</div>
+            <div class="about-card-text" style="margin-top:12px;font-size:12px">
+              Başkentray'ı daha erişilebilir kılmak için geliştirilmiş, 
+              açık kaynak ruhuyla tasarlanmış bir uygulamadır. Gerçek zamanlı 
+              konum takibi ve topluluk bildirimleri ile yolcu deneyimini 
+              iyileştirmeyi hedefler.
+            </div>
+            <div class="dev-year">© 2025 - 2026 | Tüm Hakları Saklıdır</div>
+            <div class="version">Versiyon 2.0 • Canlı Konum & Topluluk Bildirimleri</div>
           </div>
           
           <div class="about-card">
@@ -690,32 +734,18 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
             </div>
           </div>
 
-          <div class="dev-info">
-            <div class="dev-photo">👨‍💻</div>
-            <div class="dev-name">EREN SARIGÜL</div>
-            <div class="dev-title">Bilgisayar Mühendisi</div>
-            <div class="dev-uni">📍 Ankara, Türkiye</div>
-            <div class="about-card-text" style="margin-top:12px;font-size:12px">
-              Başkentray'ı daha erişilebilir kılmak için geliştirilmiş, 
-              açık kaynak ruhuyla tasarlanmış bir uygulamadır. Gerçek zamanlı 
-              konum takibi ve topluluk bildirimleri ile yolcu deneyimini 
-              iyileştirmeyi hedefler.
-            </div>
-            <div class="dev-year">© 2025 - 2026 | Tüm Hakları Saklıdır</div>
-            <div class="version">Versiyon 2.0 • Canlı Konum & Topluluk Bildirimleri</div>
-          </div>
         </div>
       </div>
 
-    </div>
-  </div>
+    </div><!-- /pages-swipe-inner -->
+  </div><!-- /pages-swipe-wrap -->
 
   <div class="tab-bar">
     <div class="tab active" onclick="showPage('saatler',0)"><span class="tab-icon">🚆</span>Saatler</div>
     <div class="tab" onclick="showPage('duraklar',1)"><span class="tab-icon">📍</span>Duraklar</div>
     <div class="tab" onclick="showPage('harita',2)"><span class="tab-icon">🗺️</span>Harita</div>
     <div class="tab" onclick="showPage('fav',3)"><span class="tab-icon">⭐</span>Favoriler</div>
-    <div class="tab" onclick="showPage('nearby',4)"><span class="tab-icon">🔔</span>Yaklaşan</div>
+    <div class="tab" onclick="showPage('ariza',4)"><span class="tab-icon">🚨</span>Arıza</div>
     <div class="tab" onclick="showPage('about',5)"><span class="tab-icon">ℹ️</span>Hakkında</div>
   </div>
 </div>
@@ -725,13 +755,37 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
 // GERÇEK BAŞKENTRAY TARİFESİ (TÜM DURAKLAR)
 // ═══════════════════════════════════════════════
 
-const STOPS_ALL = ["Sincan","Lale","Elvankent","Eryaman YHT","Özguneş","Etimesgut","Havadurağı","Yıldırım","Behiçbey","Motor Durağı","Gazi","Gazi Mahallesi","Hipodrom","Ankara","Yenişehir","Kurtuluş","Cebeci","Demirlibahçe","Saimekadın","Mamak","Bağderesi","Üreğil","Köstence","Kayaş"];
+// ═══════════════════════════════════════════════
+// GERÇEK BAŞKENTRAY TARİFESİ (TÜM DURAKLAR) - GÜNCELLENDİ
+// ═══════════════════════════════════════════════
 
-// Sincan → Kayaş yönü (GERÇEK SAATLER)
+const STOPS_ALL = ["Sincan","Lale","Elvankent","Eryaman YHT","Özgüneş","Etimesgut","Hava Durağı","Yıldırım","Behiçbey","Motor Durağı","Gazi","Gazi Mahallesi","Hipodrom","Ankara Gar","Yenişehir","Kurtuluş","Cebeci","Demirlibahçe","Saimekadın","Mamak","Bağderesi","Üreğil","Köstence","Kayaş"];
+
+// Sincan → Kayaş yönü (GERÇEK SAATLER - GÜNCELLENDİ)
 const SCHEDULE_SINCAN_TO_KAYAS = {
   "Sincan": ["06:00","06:12","06:24","06:36","06:48","07:00","07:12","07:24","07:36","07:48","08:00","08:12","08:24","08:36","08:48","09:00","09:15","09:30","09:45","10:00","10:15","10:30","10:45","11:00","11:15","11:30","11:45","12:00","12:15","12:30","12:45","13:00","13:15","13:30","13:45","14:00","14:15","14:30","14:45","15:00","15:15","15:30","15:45","15:57","16:09","16:21","16:33","16:45","16:57","17:09","17:21","17:33","17:45","17:57","18:09","18:21","18:33","18:45","19:00","19:15","19:30","19:45","20:00","20:15","20:30","20:45","21:00","21:15","21:30","22:00","22:30","23:00","23:30"],
+  "Lale": ["06:02","06:14","06:26","06:38","06:50","07:02","07:14","07:26","07:38","07:50","08:02","08:14","08:26","08:38","08:50","09:02","09:17","09:32","09:47","10:02","10:17","10:32","10:47","11:02","11:17","11:32","11:47","12:02","12:17","12:32","12:47","13:02","13:17","13:32","13:47","14:02","14:17","14:32","14:47","15:02","15:17","15:32","15:47","15:59","16:11","16:23","16:35","16:47","16:59","17:11","17:23","17:35","17:47","17:59","18:11","18:23","18:35","18:47","19:02","19:17","19:32","19:47","20:02","20:17","20:32","20:47","21:02","21:17","21:32","22:02","22:32","23:02","23:32"],
+  "Elvankent": ["06:04","06:16","06:28","06:40","06:52","07:04","07:16","07:28","07:40","07:52","08:04","08:16","08:28","08:40","08:52","09:04","09:19","09:34","09:49","10:04","10:19","10:34","10:49","11:04","11:19","11:34","11:49","12:04","12:19","12:34","12:49","13:04","13:19","13:34","13:49","14:04","14:19","14:34","14:49","15:04","15:19","15:34","15:49","16:01","16:13","16:25","16:37","16:49","17:01","17:13","17:25","17:37","17:49","18:01","18:13","18:25","18:37","18:49","19:04","19:19","19:34","19:49","20:04","20:19","20:34","20:49","21:04","21:19","21:34","22:04","22:34","23:04","23:34"],
+  "Eryaman YHT": ["06:06","06:18","06:30","06:42","06:54","07:06","07:18","07:30","07:42","07:54","08:06","08:18","08:30","08:42","08:54","09:06","09:21","09:36","09:51","10:06","10:21","10:36","10:51","11:06","11:21","11:36","11:51","12:06","12:21","12:36","12:51","13:06","13:21","13:36","13:51","14:06","14:21","14:36","14:51","15:06","15:21","15:36","15:51","16:03","16:15","16:27","16:39","16:51","17:03","17:15","17:27","17:39","17:51","18:03","18:15","18:27","18:39","18:51","19:06","19:21","19:36","19:51","20:06","20:21","20:36","20:51","21:06","21:21","21:36","22:06","22:36","23:06","23:36"],
+  "Özgüneş": ["06:08","06:20","06:32","06:44","06:56","07:08","07:20","07:32","07:44","07:56","08:08","08:20","08:32","08:44","08:56","09:08","09:23","09:38","09:53","10:08","10:23","10:38","10:53","11:08","11:23","11:38","11:53","12:08","12:23","12:38","12:53","13:08","13:23","13:38","13:53","14:08","14:23","14:38","14:53","15:08","15:23","15:38","15:53","16:05","16:17","16:29","16:41","16:53","17:05","17:17","17:29","17:41","17:53","18:05","18:17","18:29","18:41","18:53","19:08","19:23","19:38","19:53","20:08","20:23","20:38","20:53","21:08","21:23","21:38","22:08","22:38","23:08","23:38"],
+  "Etimesgut": ["06:10","06:22","06:34","06:46","06:58","07:10","07:22","07:34","07:46","07:58","08:10","08:22","08:34","08:46","08:58","09:10","09:25","09:40","09:55","10:10","10:25","10:40","10:55","11:10","11:25","11:40","11:55","12:10","12:25","12:40","12:55","13:10","13:25","13:40","13:55","14:10","14:25","14:40","14:55","15:10","15:25","15:40","15:55","16:07","16:19","16:31","16:43","16:55","17:07","17:19","17:31","17:43","17:55","18:07","18:19","18:31","18:43","18:55","19:10","19:25","19:40","19:55","20:10","20:25","20:40","20:55","21:10","21:25","21:40","22:10","22:40","23:10","23:40"],
+  "Hava Durağı": ["06:12","06:24","06:36","06:48","07:00","07:12","07:24","07:36","07:48","08:00","08:12","08:24","08:36","08:48","09:00","09:12","09:27","09:42","09:57","10:12","10:27","10:42","10:57","11:12","11:27","11:42","11:57","12:12","12:27","12:42","12:57","13:12","13:27","13:42","13:57","14:12","14:27","14:42","14:57","15:12","15:27","15:42","15:57","16:09","16:21","16:33","16:45","16:57","17:09","17:21","17:33","17:45","17:57","18:09","18:21","18:33","18:45","18:57","19:12","19:27","19:42","19:57","20:12","20:27","20:42","20:57","21:12","21:27","21:42","22:12","22:42","23:12","23:42"],
+  "Yıldırım": ["06:14","06:26","06:38","06:50","07:02","07:14","07:26","07:38","07:50","08:02","08:14","08:26","08:38","08:50","09:02","09:14","09:29","09:44","09:59","10:14","10:29","10:44","10:59","11:14","11:29","11:44","11:59","12:14","12:29","12:44","12:59","13:14","13:29","13:44","13:59","14:14","14:29","14:44","14:59","15:14","15:29","15:44","15:59","16:11","16:23","16:35","16:47","16:59","17:11","17:23","17:35","17:47","17:59","18:11","18:23","18:35","18:47","18:59","19:14","19:29","19:44","19:59","20:14","20:29","20:44","20:59","21:14","21:29","21:44","22:14","22:44","23:14","23:44"],
+  "Behiçbey": ["06:17","06:29","06:41","06:53","07:05","07:17","07:29","07:41","07:53","08:05","08:17","08:29","08:41","08:53","09:05","09:17","09:32","09:47","10:02","10:17","10:32","10:47","11:02","11:17","11:32","11:47","12:02","12:17","12:32","12:47","13:02","13:17","13:32","13:47","14:02","14:17","14:32","14:47","15:02","15:17","15:32","15:47","16:02","16:14","16:26","16:38","16:50","17:02","17:14","17:26","17:38","17:50","18:02","18:14","18:26","18:38","18:50","19:02","19:17","19:32","19:47","20:02","20:17","20:32","20:47","21:02","21:17","21:32","21:47","22:17","22:47","23:17","23:47"],
   "Motor Durağı": ["06:20","06:32","06:44","06:56","07:08","07:20","07:32","07:44","07:56","08:08","08:20","08:32","08:44","08:56","09:08","09:20","09:35","09:50","10:05","10:20","10:35","10:50","11:05","11:20","11:35","11:50","12:05","12:20","12:35","12:50","13:05","13:20","13:35","13:50","14:05","14:20","14:35","14:50","15:05","15:20","15:35","15:50","16:05","16:17","16:29","16:41","16:53","17:05","17:17","17:29","17:41","17:53","18:05","18:17","18:29","18:41","18:53","19:05","19:20","19:35","19:50","20:05","20:20","20:35","20:50","21:05","21:20","21:35","21:50","22:20","22:50","23:20","23:50"],
-  "Ankara": ["06:29","06:41","06:53","07:05","07:17","07:29","07:41","07:53","08:05","08:17","08:29","08:41","08:53","09:05","09:17","09:29","09:44","09:59","10:14","10:29","10:44","10:59","11:14","11:29","11:44","11:59","12:14","12:29","12:44","12:59","13:14","13:29","13:44","13:59","14:14","14:29","14:44","14:59","15:14","15:29","15:44","15:59","16:14","16:26","16:38","16:50","17:02","17:14","17:26","17:38","17:50","18:02","18:14","18:26","18:38","18:50","19:02","19:14","19:29","19:44","19:59","20:14","20:29","20:44","20:59","21:14","21:29","21:44","21:59","22:29","22:59","23:29","23:59"],
+  "Gazi": ["06:22","06:34","06:46","06:58","07:10","07:22","07:34","07:46","07:58","08:10","08:22","08:34","08:46","08:58","09:10","09:22","09:37","09:52","10:07","10:22","10:37","10:52","11:07","11:22","11:37","11:52","12:07","12:22","12:37","12:52","13:07","13:22","13:37","13:52","14:07","14:22","14:37","14:52","15:07","15:22","15:37","15:52","16:07","16:19","16:31","16:43","16:55","17:07","17:19","17:31","17:43","17:55","18:07","18:19","18:31","18:43","18:55","19:07","19:22","19:37","19:52","20:07","20:22","20:37","20:52","21:07","21:22","21:37","21:52","22:22","22:52","23:22","23:52"],
+  "Gazi Mahallesi": ["06:24","06:36","06:48","07:00","07:12","07:24","07:36","07:48","08:00","08:12","08:24","08:36","08:48","09:00","09:12","09:24","09:39","09:54","10:09","10:24","10:39","10:54","11:09","11:24","11:39","11:54","12:09","12:24","12:39","12:54","13:09","13:24","13:39","13:54","14:09","14:24","14:39","14:54","15:09","15:24","15:39","15:54","16:09","16:21","16:33","16:45","16:57","17:09","17:21","17:33","17:45","17:57","18:09","18:21","18:33","18:45","18:57","19:09","19:24","19:39","19:54","20:09","20:24","20:39","20:54","21:09","21:24","21:39","21:54","22:24","22:54","23:24","23:54"],
+  "Hipodrom": ["06:26","06:38","06:50","07:02","07:14","07:26","07:38","07:50","08:02","08:14","08:26","08:38","08:50","09:02","09:14","09:26","09:41","09:56","10:11","10:26","10:41","10:56","11:11","11:26","11:41","11:56","12:11","12:26","12:41","12:56","13:11","13:26","13:41","13:56","14:11","14:26","14:41","14:56","15:11","15:26","15:41","15:56","16:11","16:23","16:35","16:47","16:59","17:11","17:23","17:35","17:47","17:59","18:11","18:23","18:35","18:47","18:59","19:11","19:26","19:41","19:56","20:11","20:26","20:41","20:56","21:11","21:26","21:41","21:56","22:26","22:56","23:26","23:56"],
+  "Ankara Gar": ["06:29","06:41","06:53","07:05","07:17","07:29","07:41","07:53","08:05","08:17","08:29","08:41","08:53","09:05","09:17","09:29","09:44","09:59","10:14","10:29","10:44","10:59","11:14","11:29","11:44","11:59","12:14","12:29","12:44","12:59","13:14","13:29","13:44","13:59","14:14","14:29","14:44","14:59","15:14","15:29","15:44","15:59","16:14","16:26","16:38","16:50","17:02","17:14","17:26","17:38","17:50","18:02","18:14","18:26","18:38","18:50","19:02","19:14","19:29","19:44","19:59","20:14","20:29","20:44","20:59","21:14","21:29","21:44","21:59","22:29","22:59","23:29","23:59"],
+  "Yenişehir": ["06:33","06:45","06:57","07:09","07:21","07:33","07:45","07:57","08:09","08:21","08:33","08:45","08:57","09:09","09:21","09:33","09:48","10:03","10:18","10:33","10:48","11:03","11:18","11:33","11:48","12:03","12:18","12:33","12:48","13:03","13:18","13:33","13:48","14:03","14:18","14:33","14:48","15:03","15:18","15:33","15:48","16:03","16:18","16:30","16:42","16:54","17:06","17:18","17:30","17:42","17:54","18:06","18:18","18:30","18:42","18:54","19:06","19:18","19:33","19:48","20:03","20:18","20:33","20:48","21:03","21:18","21:33","21:48","22:03","22:33","23:03","23:33"],
+  "Kurtuluş": ["06:34","06:46","06:58","07:10","07:22","07:34","07:46","07:58","08:10","08:22","08:34","08:46","08:58","09:10","09:22","09:34","09:49","10:04","10:19","10:34","10:49","11:04","11:19","11:34","11:49","12:04","12:19","12:34","12:49","13:04","13:19","13:34","13:49","14:04","14:19","14:34","14:49","15:04","15:19","15:34","15:49","16:04","16:19","16:31","16:43","16:55","17:07","17:19","17:31","17:43","17:55","18:07","18:19","18:31","18:43","18:55","19:07","19:19","19:34","19:49","20:04","20:19","20:34","20:49","21:04","21:19","21:34","21:49","22:04","22:34","23:04","23:34"],
+  "Cebeci": ["06:36","06:48","07:00","07:12","07:24","07:36","07:48","08:00","08:12","08:24","08:36","08:48","09:00","09:12","09:24","09:36","09:51","10:06","10:21","10:36","10:51","11:06","11:21","11:36","11:51","12:06","12:21","12:36","12:51","13:06","13:21","13:36","13:51","14:06","14:21","14:36","14:51","15:06","15:21","15:36","15:51","16:06","16:21","16:33","16:45","16:57","17:09","17:21","17:33","17:45","17:57","18:09","18:21","18:33","18:45","18:57","19:09","19:21","19:36","19:51","20:06","20:21","20:36","20:51","21:06","21:21","21:36","21:51","22:06","22:36","23:06","23:36"],
+  "Demirlibahçe": ["06:38","06:50","07:02","07:14","07:26","07:38","07:50","08:02","08:14","08:26","08:38","08:50","09:02","09:14","09:26","09:38","09:53","10:08","10:23","10:38","10:53","11:08","11:23","11:38","11:53","12:08","12:23","12:38","12:53","13:08","13:23","13:38","13:53","14:08","14:23","14:38","14:53","15:08","15:23","15:38","15:53","16:08","16:23","16:35","16:47","16:59","17:11","17:23","17:35","17:47","17:59","18:11","18:23","18:35","18:47","18:59","19:11","19:23","19:38","19:53","20:08","20:23","20:38","20:53","21:08","21:23","21:38","21:53","22:08","22:38","23:08","23:38"],
+  "Saimekadın": ["06:40","06:52","07:04","07:16","07:28","07:40","07:52","08:04","08:16","08:28","08:40","08:52","09:04","09:16","09:28","09:40","09:55","10:10","10:25","10:40","10:55","11:10","11:25","11:40","11:55","12:10","12:25","12:40","12:55","13:10","13:25","13:40","13:55","14:10","14:25","14:40","14:55","15:10","15:25","15:40","15:55","16:10","16:25","16:37","16:49","17:01","17:13","17:25","17:37","17:49","18:01","18:13","18:25","18:37","18:49","19:01","19:13","19:25","19:40","19:55","20:10","20:25","20:40","20:55","21:10","21:25","21:40","21:55","22:10","22:40","23:10","23:40"],
+  "Mamak": ["06:42","06:54","07:06","07:18","07:30","07:42","07:54","08:06","08:18","08:30","08:42","08:54","09:06","09:18","09:30","09:42","09:57","10:12","10:27","10:42","10:57","11:12","11:27","11:42","11:57","12:12","12:27","12:42","12:57","13:12","13:27","13:42","13:57","14:12","14:27","14:42","14:57","15:12","15:27","15:42","15:57","16:12","16:27","16:39","16:51","17:03","17:15","17:27","17:39","17:51","18:03","18:15","18:27","18:39","18:51","19:03","19:15","19:27","19:42","19:57","20:12","20:27","20:42","20:57","21:12","21:27","21:42","21:57","22:12","22:42","23:12","23:42"],
+  "Bağderesi": ["06:44","06:56","07:08","07:20","07:32","07:44","07:56","08:08","08:20","08:32","08:44","08:56","09:08","09:20","09:32","09:44","09:59","10:14","10:29","10:44","10:59","11:14","11:29","11:44","11:59","12:14","12:29","12:44","12:59","13:14","13:29","13:44","13:59","14:14","14:29","14:44","14:59","15:14","15:29","15:44","15:59","16:14","16:29","16:41","16:53","17:05","17:17","17:29","17:41","17:53","18:05","18:17","18:29","18:41","18:53","19:05","19:17","19:29","19:44","19:59","20:14","20:29","20:44","20:59","21:14","21:29","21:44","21:59","22:14","22:44","23:14","23:44"],
+  "Üreğil": ["06:45","06:57","07:09","07:21","07:33","07:45","07:57","08:09","08:21","08:33","08:45","08:57","09:09","09:21","09:33","09:45","10:00","10:15","10:30","10:45","11:00","11:15","11:30","11:45","12:00","12:15","12:30","12:45","13:00","13:15","13:30","13:45","14:00","14:15","14:30","14:45","15:00","15:15","15:30","15:45","16:00","16:15","16:30","16:42","16:54","17:06","17:18","17:30","17:42","17:54","18:06","18:18","18:30","18:42","18:54","19:06","19:18","19:30","19:45","20:00","20:15","20:30","20:45","21:00","21:15","21:30","21:45","22:00","22:15","22:45","23:15","23:45"],
+  "Köstence": ["06:47","06:59","07:11","07:23","07:35","07:47","07:59","08:11","08:23","08:35","08:47","08:59","09:11","09:23","09:35","09:47","10:02","10:17","10:32","10:47","11:02","11:17","11:32","11:47","12:02","12:17","12:32","12:47","13:02","13:17","13:32","13:47","14:02","14:17","14:32","14:47","15:02","15:17","15:32","15:47","16:02","16:17","16:32","16:44","16:56","17:08","17:20","17:32","17:44","17:56","18:08","18:20","18:32","18:44","18:56","19:08","19:20","19:32","19:47","20:02","20:17","20:32","20:47","21:02","21:17","21:32","21:47","22:02","22:17","22:47","23:17","23:47"],
   "Kayaş": ["06:49","07:01","07:13","07:25","07:37","07:49","08:01","08:13","08:25","08:37","08:49","09:01","09:13","09:25","09:37","09:49","10:04","10:19","10:34","10:49","11:04","11:19","11:34","11:49","12:04","12:19","12:34","12:49","13:04","13:19","13:34","13:49","14:04","14:19","14:34","14:49","15:04","15:19","15:34","15:49","16:04","16:19","16:34","16:46","16:58","17:10","17:22","17:34","17:46","17:58","18:10","18:22","18:34","18:46","18:58","19:10","19:22","19:34","19:49","20:04","20:19","20:34","20:49","21:04","21:19","21:34","21:49","22:04","22:19","22:49","23:19","23:49"]
 };
 
@@ -742,11 +796,31 @@ STOPS_ALL.forEach(stop => {
   }
 });
 
-// Kayaş → Sincan yönü (GERÇEK SAATLER)
+// Kayaş → Sincan yönü (GERÇEK SAATLER - GÜNCELLENDİ)
 const SCHEDULE_KAYAS_TO_SINCAN = {
   "Kayaş": ["06:00","06:12","06:24","06:36","06:48","07:00","07:12","07:24","07:36","07:48","08:00","08:12","08:24","08:36","08:48","09:00","09:15","09:30","09:45","10:00","10:15","10:30","10:45","11:00","11:15","11:30","11:45","12:00","12:15","12:30","12:45","13:00","13:15","13:30","13:45","14:00","14:15","14:30","14:45","15:00","15:15","15:30","15:45","15:57","16:09","16:21","16:33","16:45","16:57","17:09","17:21","17:33","17:45","17:57","18:09","18:21","18:33","18:45","19:00","19:15","19:30","19:45","20:00","20:15","20:30","20:45","21:00","21:15","21:30","22:00","22:30","23:00","23:30"],
+  "Köstence": ["06:02","06:14","06:26","06:38","06:50","07:02","07:14","07:26","07:38","07:50","08:02","08:14","08:26","08:38","08:50","09:02","09:17","09:32","09:47","10:02","10:17","10:32","10:47","11:02","11:17","11:32","11:47","12:02","12:17","12:32","12:47","13:02","13:17","13:32","13:47","14:02","14:17","14:32","14:47","15:02","15:17","15:32","15:47","15:59","16:11","16:23","16:35","16:47","16:59","17:11","17:23","17:35","17:47","17:59","18:11","18:23","18:35","18:47","19:02","19:17","19:32","19:47","20:02","20:17","20:32","20:47","21:02","21:17","21:32","22:02","22:32","23:02","23:32"],
+  "Üreğil": ["06:04","06:16","06:28","06:40","06:52","07:04","07:16","07:28","07:40","07:52","08:04","08:16","08:28","08:40","08:52","09:04","09:19","09:34","09:49","10:04","10:19","10:34","10:49","11:04","11:19","11:34","11:49","12:04","12:19","12:34","12:49","13:04","13:19","13:34","13:49","14:04","14:19","14:34","14:49","15:04","15:19","15:34","15:49","16:01","16:13","16:25","16:37","16:49","17:01","17:13","17:25","17:37","17:49","18:01","18:13","18:25","18:37","18:49","19:04","19:19","19:34","19:49","20:04","20:19","20:34","20:49","21:04","21:19","21:34","22:04","22:34","23:04","23:34"],
+  "Bağderesi": ["06:05","06:17","06:29","06:41","06:53","07:05","07:17","07:29","07:41","07:53","08:05","08:17","08:29","08:41","08:53","09:05","09:20","09:35","09:50","10:05","10:20","10:35","10:50","11:05","11:20","11:35","11:50","12:05","12:20","12:35","12:50","13:05","13:20","13:35","13:50","14:05","14:20","14:35","14:50","15:05","15:20","15:35","15:50","16:02","16:14","16:26","16:38","16:50","17:02","17:14","17:26","17:38","17:50","18:02","18:14","18:26","18:38","18:50","19:05","19:20","19:35","19:50","20:05","20:20","20:35","20:50","21:05","21:20","21:35","22:05","22:35","23:05","23:35"],
+  "Mamak": ["06:07","06:19","06:31","06:43","06:55","07:07","07:19","07:31","07:43","07:55","08:07","08:19","08:31","08:43","08:55","09:07","09:22","09:37","09:52","10:07","10:22","10:37","10:52","11:07","11:22","11:37","11:52","12:07","12:22","12:37","12:52","13:07","13:22","13:37","13:52","14:07","14:22","14:37","14:52","15:07","15:22","15:37","15:52","16:04","16:16","16:28","16:40","16:52","17:04","17:16","17:28","17:40","17:52","18:04","18:16","18:28","18:40","18:52","19:07","19:22","19:37","19:52","20:07","20:22","20:37","20:52","21:07","21:22","21:37","22:07","22:37","23:07","23:37"],
+  "Saimekadın": ["06:09","06:21","06:33","06:45","06:57","07:09","07:21","07:33","07:45","07:57","08:09","08:21","08:33","08:45","08:57","09:09","09:24","09:39","09:54","10:09","10:24","10:39","10:54","11:09","11:24","11:39","11:54","12:09","12:24","12:39","12:54","13:09","13:24","13:39","13:54","14:09","14:24","14:39","14:54","15:09","15:24","15:39","15:54","16:06","16:18","16:30","16:42","16:54","17:06","17:18","17:30","17:42","17:54","18:06","18:18","18:30","18:42","18:54","19:09","19:24","19:39","19:54","20:09","20:24","20:39","20:54","21:09","21:24","21:39","22:09","22:39","23:09","23:39"],
+  "Demirlibahçe": ["06:11","06:23","06:35","06:47","06:59","07:11","07:23","07:35","07:47","07:59","08:11","08:23","08:35","08:47","08:59","09:11","09:26","09:41","09:56","10:11","10:26","10:41","10:56","11:11","11:26","11:41","11:56","12:11","12:26","12:41","12:56","13:11","13:26","13:41","13:56","14:11","14:26","14:41","14:56","15:11","15:26","15:41","15:56","16:08","16:20","16:32","16:44","16:56","17:08","17:20","17:32","17:44","17:56","18:08","18:20","18:32","18:44","18:56","19:11","19:26","19:41","19:56","20:11","20:26","20:41","20:56","21:11","21:26","21:41","22:11","22:41","23:11","23:41"],
+  "Cebeci": ["06:13","06:25","06:37","06:49","07:01","07:13","07:25","07:37","07:49","08:01","08:13","08:25","08:37","08:49","09:01","09:13","09:28","09:43","09:58","10:13","10:28","10:43","10:58","11:13","11:28","11:43","11:58","12:13","12:28","12:43","12:58","13:13","13:28","13:43","13:58","14:13","14:28","14:43","14:58","15:13","15:28","15:43","15:58","16:10","16:22","16:34","16:46","16:58","17:10","17:22","17:34","17:46","17:58","18:10","18:22","18:34","18:46","18:58","19:13","19:28","19:43","19:58","20:13","20:28","20:43","20:58","21:13","21:28","21:43","22:13","22:43","23:13","23:43"],
+  "Kurtuluş": ["06:15","06:27","06:39","06:51","07:03","07:15","07:27","07:39","07:51","08:03","08:15","08:27","08:39","08:51","09:03","09:15","09:30","09:45","10:00","10:15","10:30","10:45","11:00","11:15","11:30","11:45","12:00","12:15","12:30","12:45","13:00","13:15","13:30","13:45","14:00","14:15","14:30","14:45","15:00","15:15","15:30","15:45","16:00","16:12","16:24","16:36","16:48","17:00","17:12","17:24","17:36","17:48","18:00","18:12","18:24","18:36","18:48","19:00","19:15","19:30","19:45","20:00","20:15","20:30","20:45","21:00","21:15","21:30","21:45","22:15","22:45","23:15","23:45"],
+  "Yenişehir": ["06:16","06:28","06:40","06:52","07:04","07:16","07:28","07:40","07:52","08:04","08:16","08:28","08:40","08:52","09:04","09:16","09:31","09:46","10:01","10:16","10:31","10:46","11:01","11:16","11:31","11:46","12:01","12:16","12:31","12:46","13:01","13:16","13:31","13:46","14:01","14:16","14:31","14:46","15:01","15:16","15:31","15:46","16:01","16:13","16:25","16:37","16:49","17:01","17:13","17:25","17:37","17:49","18:01","18:13","18:25","18:37","18:49","19:01","19:16","19:31","19:46","20:01","20:16","20:31","20:46","21:01","21:16","21:31","21:46","22:16","22:46","23:16","23:46"],
+  "Ankara Gar": ["06:20","06:32","06:44","06:56","07:08","07:20","07:32","07:44","07:56","08:08","08:20","08:32","08:44","08:56","09:08","09:20","09:35","09:50","10:05","10:20","10:35","10:50","11:05","11:20","11:35","11:50","12:05","12:20","12:35","12:50","13:05","13:20","13:35","13:50","14:05","14:20","14:35","14:50","15:05","15:20","15:35","15:50","16:05","16:17","16:29","16:41","16:53","17:05","17:17","17:29","17:41","17:53","18:05","18:17","18:29","18:41","18:53","19:05","19:20","19:35","19:50","20:05","20:20","20:35","20:50","21:05","21:20","21:35","21:50","22:20","22:50","23:20","23:50"],
+  "Hipodrom": ["06:23","06:35","06:47","06:59","07:11","07:23","07:35","07:47","07:59","08:11","08:23","08:35","08:47","08:59","09:11","09:23","09:38","09:53","10:08","10:23","10:38","10:53","11:08","11:23","11:38","11:53","12:08","12:23","12:38","12:53","13:08","13:23","13:38","13:53","14:08","14:23","14:38","14:53","15:08","15:23","15:38","15:53","16:08","16:20","16:32","16:44","16:56","17:08","17:20","17:32","17:44","17:56","18:08","18:20","18:32","18:44","18:56","19:08","19:23","19:38","19:53","20:08","20:23","20:38","20:53","21:08","21:23","21:38","21:53","22:23","22:53","23:23","23:53"],
+  "Gazi Mahallesi": ["06:25","06:37","06:49","07:01","07:13","07:25","07:37","07:49","08:01","08:13","08:25","08:37","08:49","09:01","09:13","09:25","09:40","09:55","10:10","10:25","10:40","10:55","11:10","11:25","11:40","11:55","12:10","12:25","12:40","12:55","13:10","13:25","13:40","13:55","14:10","14:25","14:40","14:55","15:10","15:25","15:40","15:55","16:10","16:22","16:34","16:46","16:58","17:10","17:22","17:34","17:46","17:58","18:10","18:22","18:34","18:46","18:58","19:10","19:25","19:40","19:55","20:10","20:25","20:40","20:55","21:10","21:25","21:40","21:55","22:25","22:55","23:25","23:55"],
+  "Gazi": ["06:27","06:39","06:51","07:03","07:15","07:27","07:39","07:51","08:03","08:15","08:27","08:39","08:51","09:03","09:15","09:27","09:42","09:57","10:12","10:27","10:42","10:57","11:12","11:27","11:42","11:57","12:12","12:27","12:42","12:57","13:12","13:27","13:42","13:57","14:12","14:27","14:42","14:57","15:12","15:27","15:42","15:57","16:12","16:24","16:36","16:48","17:00","17:12","17:24","17:36","17:48","18:00","18:12","18:24","18:36","18:48","19:00","19:12","19:27","19:42","19:57","20:12","20:27","20:42","20:57","21:12","21:27","21:42","21:57","22:27","22:57","23:27","23:57"],
   "Motor Durağı": ["06:29","06:41","06:53","07:05","07:17","07:29","07:41","07:53","08:05","08:17","08:29","08:41","08:53","09:05","09:17","09:29","09:44","09:59","10:14","10:29","10:44","10:59","11:14","11:29","11:44","11:59","12:14","12:29","12:44","12:59","13:14","13:29","13:44","13:59","14:14","14:29","14:44","14:59","15:14","15:29","15:44","15:59","16:14","16:26","16:38","16:50","17:02","17:14","17:26","17:38","17:50","18:02","18:14","18:26","18:38","18:50","19:02","19:14","19:29","19:44","19:59","20:14","20:29","20:44","20:59","21:14","21:29","21:44","21:59","22:29","22:59","23:29","23:59"],
-  "Ankara": ["06:20","06:32","06:44","06:56","07:08","07:20","07:32","07:44","07:56","08:08","08:20","08:32","08:44","08:56","09:08","09:20","09:35","09:50","10:05","10:20","10:35","10:50","11:05","11:20","11:35","11:50","12:05","12:20","12:35","12:50","13:05","13:20","13:35","13:50","14:05","14:20","14:35","14:50","15:05","15:20","15:35","15:50","16:05","16:17","16:29","16:41","16:53","17:05","17:17","17:29","17:41","17:53","18:05","18:17","18:29","18:41","18:53","19:05","19:20","19:35","19:50","20:05","20:20","20:35","20:50","21:05","21:20","21:35","21:50","22:20","22:50","23:20","23:50"],
+  "Behiçbey": ["06:32","06:44","06:56","07:08","07:20","07:32","07:44","07:56","08:08","08:20","08:32","08:44","08:56","09:08","09:20","09:32","09:47","10:02","10:17","10:32","10:47","11:02","11:17","11:32","11:47","12:02","12:17","12:32","12:47","13:02","13:17","13:32","13:47","14:02","14:17","14:32","14:47","15:02","15:17","15:32","15:47","16:02","16:17","16:29","16:41","16:53","17:05","17:17","17:29","17:41","17:53","18:05","18:17","18:29","18:41","18:53","19:05","19:17","19:32","19:47","20:02","20:17","20:32","20:47","21:02","21:17","21:32","21:47","22:02","22:32","23:02","23:32"],
+  "Yıldırım": ["06:35","06:47","06:59","07:11","07:23","07:35","07:47","07:59","08:11","08:23","08:35","08:47","08:59","09:11","09:23","09:35","09:50","10:05","10:20","10:35","10:50","11:05","11:20","11:35","11:50","12:05","12:20","12:35","12:50","13:05","13:20","13:35","13:50","14:05","14:20","14:35","14:50","15:05","15:20","15:35","15:50","16:05","16:20","16:32","16:44","16:56","17:08","17:20","17:32","17:44","17:56","18:08","18:20","18:32","18:44","18:56","19:08","19:20","19:35","19:50","20:05","20:20","20:35","20:50","21:05","21:20","21:35","21:50","22:05","22:35","23:05","23:35"],
+  "Hava Durağı": ["06:37","06:49","07:01","07:13","07:25","07:37","07:49","08:01","08:13","08:25","08:37","08:49","09:01","09:13","09:25","09:37","09:52","10:07","10:22","10:37","10:52","11:07","11:22","11:37","11:52","12:07","12:22","12:37","12:52","13:07","13:22","13:37","13:52","14:07","14:22","14:37","14:52","15:07","15:22","15:37","15:52","16:07","16:22","16:34","16:46","16:58","17:10","17:22","17:34","17:46","17:58","18:10","18:22","18:34","18:46","18:58","19:10","19:22","19:37","19:52","20:07","20:22","20:37","20:52","21:07","21:22","21:37","21:52","22:07","22:37","23:07","23:37"],
+  "Etimesgut": ["06:39","06:51","07:03","07:15","07:27","07:39","07:51","08:03","08:15","08:27","08:39","08:51","09:03","09:15","09:27","09:39","09:54","10:09","10:24","10:39","10:54","11:09","11:24","11:39","11:54","12:09","12:24","12:39","12:54","13:09","13:24","13:39","13:54","14:09","14:24","14:39","14:54","15:09","15:24","15:39","15:54","16:09","16:24","16:36","16:48","17:00","17:12","17:24","17:36","17:48","18:00","18:12","18:24","18:36","18:48","19:00","19:12","19:24","19:39","19:54","20:09","20:24","20:39","20:54","21:09","21:24","21:39","21:54","22:09","22:39","23:09","23:39"],
+  "Özgüneş": ["06:41","06:53","07:05","07:17","07:29","07:41","07:53","08:05","08:17","08:29","08:41","08:53","09:05","09:17","09:29","09:41","09:56","10:11","10:26","10:41","10:56","11:11","11:26","11:41","11:56","12:11","12:26","12:41","12:56","13:11","13:26","13:41","13:56","14:11","14:26","14:41","14:56","15:11","15:26","15:41","15:56","16:11","16:26","16:38","16:50","17:02","17:14","17:26","17:38","17:50","18:02","18:14","18:26","18:38","18:50","19:02","19:14","19:26","19:41","19:56","20:11","20:26","20:41","20:56","21:11","21:26","21:41","21:56","22:11","22:41","23:11","23:41"],
+  "Eryaman YHT": ["06:43","06:55","07:07","07:19","07:31","07:43","07:55","08:07","08:19","08:31","08:43","08:55","09:07","09:19","09:31","09:43","09:58","10:13","10:28","10:43","10:58","11:13","11:28","11:43","11:58","12:13","12:28","12:43","12:58","13:13","13:28","13:43","13:58","14:13","14:28","14:43","14:58","15:13","15:28","15:43","15:58","16:13","16:28","16:40","16:52","17:04","17:16","17:28","17:40","17:52","18:04","18:16","18:28","18:40","18:52","19:04","19:16","19:28","19:43","19:58","20:13","20:28","20:43","20:58","21:13","21:28","21:43","21:58","22:13","22:43","23:13","23:43"],
+  "Elvankent": ["06:45","06:57","07:09","07:21","07:33","07:45","07:57","08:09","08:21","08:33","08:45","08:57","09:09","09:21","09:33","09:45","10:00","10:15","10:30","10:45","11:00","11:15","11:30","11:45","12:00","12:15","12:30","12:45","13:00","13:15","13:30","13:45","14:00","14:15","14:30","14:45","15:00","15:15","15:30","15:45","16:00","16:15","16:30","16:42","16:54","17:06","17:18","17:30","17:42","17:54","18:06","18:18","18:30","18:42","18:54","19:06","19:18","19:30","19:45","20:00","20:15","20:30","20:45","21:00","21:15","21:30","21:45","22:00","22:15","22:45","23:15","23:45"],
+  "Lale": ["06:47","06:59","07:11","07:23","07:35","07:47","07:59","08:11","08:23","08:35","08:47","08:59","09:11","09:23","09:35","09:47","10:02","10:17","10:32","10:47","11:02","11:17","11:32","11:47","12:02","12:17","12:32","12:47","13:02","13:17","13:32","13:47","14:02","14:17","14:32","14:47","15:02","15:17","15:32","15:47","16:02","16:17","16:32","16:44","16:56","17:08","17:20","17:32","17:44","17:56","18:08","18:20","18:32","18:44","18:56","19:08","19:20","19:32","19:47","20:02","20:17","20:32","20:47","21:02","21:17","21:32","21:47","22:02","22:17","22:47","23:17","23:47"],
   "Sincan": ["06:49","07:01","07:13","07:25","07:37","07:49","08:01","08:13","08:25","08:37","08:49","09:01","09:13","09:25","09:37","09:49","10:04","10:19","10:34","10:49","11:04","11:19","11:34","11:49","12:04","12:19","12:34","12:49","13:04","13:19","13:34","13:49","14:04","14:19","14:34","14:49","15:04","15:19","15:34","15:49","16:04","16:19","16:34","16:46","16:58","17:10","17:22","17:34","17:46","17:58","18:10","18:22","18:34","18:46","18:58","19:10","19:22","19:34","19:49","20:04","20:19","20:34","20:49","21:04","21:19","21:34","21:49","22:04","22:19","22:49","23:19","23:49"]
 };
 
@@ -758,40 +832,40 @@ STOPS_ALL.forEach(stop => {
 
 // DURAK KOORDİNATLARI
 const CT_DURAKLAR = [
-  {id:0, ad:"Sincan", lat:39.9646, lon:32.5840, sira:0},
-  {id:1, ad:"Lale", lat:39.9615, lon:32.5987, sira:1},
-  {id:2, ad:"Elvankent", lat:39.9574, lon:32.6155, sira:2},
-  {id:3, ad:"Eryaman YHT", lat:39.9557, lon:32.6304, sira:3},
-  {id:4, ad:"Özguneş", lat:39.9518, lon:32.6489, sira:4},
-  {id:5, ad:"Etimesgut", lat:39.9491, lon:32.6628, sira:5},
-  {id:6, ad:"Havadurağı", lat:39.9422, lon:32.6882, sira:6},
-  {id:7, ad:"Yıldırım", lat:39.9323, lon:32.7045, sira:7},
-  {id:8, ad:"Behiçbey", lat:39.9314, lon:32.7498, sira:8},
-  {id:9, ad:"Motor Durağı", lat:39.9342, lon:32.7784, sira:9},
-  {id:10, ad:"Gazi", lat:39.9402, lon:32.7959, sira:10},
-  {id:11, ad:"Gazi Mahallesi", lat:39.9441, lon:32.8127, sira:11},
-  {id:12, ad:"Hipodrom", lat:39.9451, lon:32.8260, sira:12},
-  {id:13, ad:"Ankara", lat:39.9363, lon:32.8441, sira:13},
-  {id:14, ad:"Yenişehir", lat:39.9289, lon:32.8551, sira:14},
-  {id:15, ad:"Kurtuluş", lat:39.9286, lon:32.8696, sira:15},
-  {id:16, ad:"Cebeci", lat:39.9333, lon:32.8762, sira:16},
-  {id:17, ad:"Demirlibahçe", lat:39.9398, lon:32.8828, sira:17},
-  {id:18, ad:"Saimekadın", lat:39.9375, lon:32.8947, sira:18},
-  {id:19, ad:"Mamak", lat:39.9315, lon:32.9113, sira:19},
-  {id:20, ad:"Bağderesi", lat:39.9259, lon:32.9233, sira:20},
-  {id:21, ad:"Üreğil", lat:39.9224, lon:32.9325, sira:21},
-  {id:22, ad:"Köstence", lat:39.9169, lon:32.9523, sira:22},
-  {id:23, ad:"Kayaş", lat:39.9134, lon:32.9657, sira:23}
+  {id:0, ad:"Sincan", lat:39.964687, lon:32.583989, sira:0},
+  {id:1, ad:"Lale", lat:39.961568, lon:32.598764, sira:1},
+  {id:2, ad:"Elvankent", lat:39.957453, lon:32.615571, sira:2},
+  {id:3, ad:"Eryaman YHT", lat:39.955861, lon:32.630449, sira:3},
+  {id:4, ad:"Özgüneş", lat:39.951909, lon:32.648979, sira:4},
+  {id:5, ad:"Etimesgut", lat:39.949194, lon:32.662804, sira:5},
+  {id:6, ad:"Hava Durağı", lat:39.942248, lon:32.688279, sira:6},
+  {id:7, ad:"Yıldırım", lat:39.932382, lon:32.704555, sira:7},
+  {id:8, ad:"Behiçbey", lat:39.931579, lon:32.749890, sira:8},
+  {id:9, ad:"Motor Durağı", lat:39.934409, lon:32.778432, sira:9},
+  {id:10, ad:"Gazi", lat:39.940274, lon:32.795961, sira:10},
+  {id:11, ad:"Gazi Mahallesi", lat:39.944156, lon:32.812752, sira:11},
+  {id:12, ad:"Hipodrom", lat:39.945133, lon:32.826067, sira:12},
+  {id:13, ad:"Ankara Gar", lat:39.935502, lon:32.843444, sira:13},
+  {id:14, ad:"Yenişehir", lat:39.929133, lon:32.857846, sira:14},
+  {id:15, ad:"Kurtuluş", lat:39.928919, lon:32.868185, sira:15},
+  {id:16, ad:"Cebeci", lat:39.933401, lon:32.876208, sira:16},
+  {id:17, ad:"Demirlibahçe", lat:39.939857, lon:32.882884, sira:17},
+  {id:18, ad:"Saimekadın", lat:39.937538, lon:32.894748, sira:18},
+  {id:19, ad:"Mamak", lat:39.931547, lon:32.911313, sira:19},
+  {id:20, ad:"Bağderesi", lat:39.925915, lon:32.923335, sira:20},
+  {id:21, ad:"Üreğil", lat:39.922501, lon:32.932196, sira:21},
+  {id:22, ad:"Köstence", lat:39.916889, lon:32.950755, sira:22},
+  {id:23, ad:"Kayaş", lat:39.913467, lon:32.965723, sira:23}
 ];
 
 // TOPLULUK BİLDİRİM SİSTEMİ
-let communityReports = { delay: {}, breakdown: {}, kalabalik: {} };
+let communityReports = { delay: {}, breakdown: {} };
 let lastReportTime = 0;
 const CONFIRM_THRESHOLD = 3;
 window.__supaReports = {};
 
 // STATE
-let curStop = 'Ankara';
+let curStop = 'Ankara Gar';
 let curDir = 0;
 let showAll = false;
 let favs = [];
@@ -841,29 +915,55 @@ function showToast(msg) {
   setTimeout(() => t.classList.remove('show'), 3000);
 }
 
-// KONUM İZİN İSTE
+// KONUM İZİN İSTE / TOGGLE
 function requestLocationPermission() {
+  // Eğer zaten aktifse, kapat
+  if (locationActive) {
+    stopLocationTracking();
+    return;
+  }
+
   if (!navigator.geolocation) {
     showToast("❌ Tarayıcınız GPS desteklemiyor");
     return;
   }
   
-  showToast("📍 Konum izni isteniyor...");
+  showLocationAlert("📍 Konum izni isteniyor...", "info");
   
   navigator.geolocation.getCurrentPosition(
     (pos) => {
       locationActive = true;
       updateLocationButtons(true);
       startLocationTracking();
-      showToast("✅ Konum izni verildi, takip başladı");
+      showLocationAlert("✅ Konum aktif! GPS takibi başladı.", "success");
     },
     (err) => {
       locationActive = false;
       updateLocationButtons(false);
-      showToast("❌ Konum izni reddedildi veya alınamadı");
+      showLocationAlert("❌ Konum izni reddedildi veya alınamadı.", "error");
     },
     { enableHighAccuracy: true, timeout: 10000 }
   );
+}
+
+function showLocationAlert(msg, type) {
+  let el = document.getElementById('locationAlertOverlay');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'locationAlertOverlay';
+    el.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.65);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(4px)';
+    document.body.appendChild(el);
+  }
+  const colors = { success:'#10b981', error:'#ef4444', info:'#22d3ee' };
+  const icons = { success:'✅', error:'❌', info:'📍' };
+  const color = colors[type] || colors.info;
+  el.innerHTML = `
+    <div style="background:linear-gradient(135deg,#0d1d35,#112240);border:2px solid ${color};border-radius:20px;padding:28px 24px;max-width:320px;width:100%;text-align:center;box-shadow:0 0 40px rgba(0,0,0,0.6)">
+      <div style="font-size:48px;margin-bottom:12px">${icons[type]}</div>
+      <div style="font-size:15px;font-weight:800;color:${color};margin-bottom:8px">${msg}</div>
+      <button onclick="document.getElementById('locationAlertOverlay').remove()" style="margin-top:16px;background:${color};color:#fff;border:none;border-radius:20px;padding:10px 28px;font-size:13px;font-weight:800;cursor:pointer">Tamam</button>
+    </div>`;
+  setTimeout(() => { if (document.getElementById('locationAlertOverlay')) el.remove(); }, 3500);
 }
 
 function stopLocationTracking() {
@@ -872,6 +972,7 @@ function stopLocationTracking() {
     navigator.geolocation.clearWatch(locationWatchId);
     locationWatchId = null;
   }
+  stopGpsBroadcast();
   updateLocationButtons(false);
   const card = document.getElementById('locationCard');
   if (card) card.style.display = 'none';
@@ -879,7 +980,7 @@ function stopLocationTracking() {
   isAtStation = false;
   isOnTrain = false;
   updateCommunityPanel();
-  showToast("📍 Konum takibi durduruldu");
+  showLocationAlert("🔕 Konum takibi durduruldu.", "error");
 }
 
 function updateLocationButtons(active) {
@@ -940,8 +1041,11 @@ function updateLocationStatus(lat, lon, speedKmh) {
   if (!nearestStop) return;
   
   currentStopObj = nearestStop;
-  isAtStation = minDist <= 100;
-  isOnTrain = speedKmh > 10 && minDist < 200;
+  isAtStation = minDist <= 120;
+  // Geliştirilmiş tren tespiti:
+  // Hat üzerindeyse 5 km/h yeterli, durak çok yakınsa (200m) 2 km/h bile yeterli
+  const onHat = minDist < 400;
+  isOnTrain = (speedKmh > 5 && onHat) || (speedKmh > 2 && minDist < 200);
   
   if (userLocation && userLocation.lat) {
     const lonDiff = lon - (userLocation.lon || lon);
@@ -992,49 +1096,37 @@ function updateLocationStatus(lat, lon, speedKmh) {
 }
 
 function updateCommunityPanel() {
-  const container  = document.getElementById('communityList');
+  const container = document.getElementById('communityList');
   const statusSpan = document.getElementById('communityStatus');
   if (!container) return;
-
-  const reports = Object.values(window.__supaReports || {});
-
+  const rpts = Object.values(window.__supaReports || {});
   if (statusSpan) {
-    statusSpan.className = 'community-status' + (reports.length ? ' active' : '');
-    statusSpan.textContent = reports.length ? `${reports.length} aktif bildirim` : 'Bildirim yok';
+    statusSpan.className = 'community-status' + (rpts.length ? ' active' : '');
+    statusSpan.textContent = rpts.length ? `${rpts.length} aktif bildirim` : 'Bildirim yok';
   }
-
-  if (!reports.length) {
-    container.innerHTML = '<div class="empty-community">✅ Şu an aktif bildirim yok</div>';
-    return;
-  }
-
-  const tipIcon  = { gecikmeli:'⏰', arıza:'⚠️', iptal:'🚫', kalabalık:'👥' };
-  const tipLabel = { gecikmeli:'Gecikme', arıza:'Arıza', iptal:'İptal', kalabalık:'Kalabalık' };
-
-  container.innerHTML = reports.map(r => {
-    const onaylar = r.onaylar || 0;
-    const retler  = r.retler  || 0;
-    const isHigh  = onaylar >= CONFIRM_THRESHOLD;
-    const isMine  = r.uid === MY_UID;
-    const onaylayanlar = r.onaylayanlar || [];
-    const reddedenler  = r.reddedenler  || [];
-    const voted   = onaylayanlar.includes(MY_UID) || reddedenler.includes(MY_UID);
-    const zaman   = r.updated_at ? new Date(r.updated_at).toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit'}) : '';
-
+  if (!rpts.length) { container.innerHTML = '<div class="empty-community">✅ Şu an aktif bildirim yok</div>'; return; }
+  const icons  = { gecikmeli:'⏰', arıza:'⚠️', iptal:'🚫', kalabalık:'👥', gelmedi:'🚫' };
+  const labels = { gecikmeli:'Gecikme', arıza:'Arıza', iptal:'İptal', kalabalık:'Kalabalık', gelmedi:'Tren Gelmedi' };
+  container.innerHTML = rpts.map(r => {
+    const onay = r.onaylar||0, ret = r.retler||0;
+    const isHigh = onay >= CONFIRM_THRESHOLD;
+    const isMine = r.uid === MY_UID;
+    const voted  = (r.onaylayanlar||[]).includes(MY_UID)||(r.reddedenler||[]).includes(MY_UID);
+    const saat   = r.updated_at ? new Date(r.updated_at).toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit'}) : '';
+    const gecTxt = r.gec_dk ? ` · <strong style="color:var(--red2)">~${r.gec_dk} dk geç</strong>` : '';
     return `<div class="community-item">
-      <div class="community-item-icon">${tipIcon[r.tip]||'📣'}</div>
+      <div class="community-item-icon">${icons[r.tip]||'📣'}</div>
       <div class="community-item-content" style="flex:1">
-        <div class="community-item-title">${tipLabel[r.tip]||r.tip} — ${r.istasyon}</div>
-        <div class="community-item-detail">${r.hat||''} · ${r.sefer_saati||''} · ${zaman}${r.aciklama?' · '+r.aciklama.slice(0,35):''}</div>
-        ${!isMine && !voted
-          ? `<div style="display:flex;gap:6px;margin-top:6px">
-               <button class="vote-btn onay" onclick="window.sbVoteReport(${r.id},'onay')">✅ ${onaylar}</button>
-               <button class="vote-btn ret"  onclick="window.sbVoteReport(${r.id},'ret')">👎 ${retler}</button>
-             </div>`
-          : `<div style="font-size:10px;color:var(--text3);margin-top:4px">${isMine?'📝 Sizin bildiriminiz':'✅ Oy verdiniz'} · ✅${onaylar} 👎${retler}</div>`
-        }
+        <div class="community-item-title">${labels[r.tip]||r.tip} — ${r.istasyon}</div>
+        <div class="community-item-detail">${r.hat||''} · ${r.sefer_saati||''} · ${saat}${gecTxt}${r.aciklama?' · '+r.aciklama.slice(0,30):''}</div>
+        ${!isMine&&!voted
+          ?`<div style="display:flex;gap:6px;margin-top:5px">
+              <button class="vote-btn onay" onclick="window.sbVote(${r.id},'onay')">✅ ${onay}</button>
+              <button class="vote-btn ret"  onclick="window.sbVote(${r.id},'ret')">👎 ${ret}</button>
+            </div>`
+          :`<div style="font-size:10px;color:var(--text3);margin-top:4px">${isMine?'📝 Sizin bildiriminiz':'✅ Oy verdiniz'} · ✅${onay} 👎${ret}</div>`}
       </div>
-      <div class="community-item-count ${isHigh?'high':''}">${onaylar}/${CONFIRM_THRESHOLD}</div>
+      <div class="community-item-count ${isHigh?'high':''}">${onay}/${CONFIRM_THRESHOLD}</div>
     </div>`;
   }).join('');
 }
@@ -1142,62 +1234,121 @@ function updateBigAlertCard() {
   container.style.display = 'none';
 }
 
-function reportDelay(station) { openReportModal(station, 'gecikmeli'); }
-function reportBreakdown(station) { openReportModal(station, 'arıza'); }
-function reportTrainBreakdown() { openReportModal(curDir===0?'Sincan→Kayaş':'Kayaş→Sincan', 'arıza'); }
+// ════════════════════════════════════════════════════════
+//  BİLDİRİM MODAL — Yön seçimi + Geriye dönük 2 saat
+// ════════════════════════════════════════════════════════
+let _rp = { station:null, type:null, seferSaati:null, dir:null };
 
-// ── MODAL KONTROL ──────────────────────────────
-let _rState = { station:null, type:null, seferSaati:null };
-
-function openReportModal(station, preType) {
-  _rState = { station, type: preType||null, seferSaati: null };
-  document.getElementById('rModalStation').textContent = station;
-  document.getElementById('rModalDesc').value = '';
-  document.getElementById('rModalMsg').textContent = '';
-  document.querySelectorAll('.rtype-btn').forEach(b => b.classList.toggle('selected', b.dataset.type === preType));
-
-  const trainBox = document.getElementById('rModalTrains');
-  trainBox.innerHTML = '';
-  const times = getFuture(curStop, curDir).slice(0, 8);
-  if (!times.length) {
-    trainBox.innerHTML = '<span style="font-size:12px;color:var(--text3)">Yaklaşan sefer yok</span>';
-    _rState.seferSaati = 'genel';
-  } else {
-    times.forEach((t, i) => {
-      const p = document.createElement('button');
-      p.className = 'train-pill' + (i===0?' selected':'');
-      p.textContent = t;
-      p.onclick = () => { document.querySelectorAll('.train-pill').forEach(x=>x.classList.remove('selected')); p.classList.add('selected'); _rState.seferSaati=t; };
-      trainBox.appendChild(p);
-      if (i===0) _rState.seferSaati = t;
-    });
-  }
-  document.getElementById('reportModal').classList.add('open');
+function openRpModal(station, preType) {
+  _rp = { station: station||curStop, type:preType||null, seferSaati:null, dir: curDir };
+  document.getElementById('rpStation').textContent = _rp.station;
+  document.getElementById('rpDesc').value = '';
+  document.getElementById('rpMsg').textContent = '';
+  document.getElementById('rpGecDk').value = '';
+  document.getElementById('rpGecDiv').style.display = preType==='gecikmeli' ? 'block' : 'none';
+  document.querySelectorAll('.rtype-btn[data-type]').forEach(b => b.classList.toggle('sel', b.dataset.type === preType));
+  document.getElementById('rpDir0').classList.toggle('sel', _rp.dir === 0);
+  document.getElementById('rpDir1').classList.toggle('sel', _rp.dir === 1);
+  buildRpTrainList();
+  document.getElementById('rpModal').classList.add('open');
 }
 
-function closeReportModal() { document.getElementById('reportModal').classList.remove('open'); }
-function selectRType(btn) { document.querySelectorAll('.rtype-btn').forEach(b=>b.classList.remove('selected')); btn.classList.add('selected'); _rState.type=btn.dataset.type; }
+function selectRpDir(d) {
+  _rp.dir = d;
+  _rp.seferSaati = null;
+  document.getElementById('rpDir0').classList.toggle('sel', d===0);
+  document.getElementById('rpDir1').classList.toggle('sel', d===1);
+  buildRpTrainList();
+}
 
-async function submitReport() {
-  if (!_rState.type)       { showToast('⚠️ Bildirim türü seçin'); return; }
-  if (!_rState.seferSaati) { showToast('⚠️ Sefer saati seçin');   return; }
-  const btn = document.getElementById('rModalSendBtn');
-  const msg = document.getElementById('rModalMsg');
-  btn.disabled = true; btn.textContent = '⏳ Gönderiliyor...';
-  const hat = curDir===0 ? 'Sincan→Kayaş' : 'Kayaş→Sincan';
-  const result = await window.sbSendReport({
-    tip:        _rState.type,
-    istasyon:   _rState.station || curStop,
-    seferSaati: _rState.seferSaati,
-    hat,
-    aciklama:   document.getElementById('rModalDesc').value.trim()
+function buildRpTrainList() {
+  const box = document.getElementById('rpTrains');
+  box.innerHTML = '';
+  const now = nowM(); // dakika cinsinden şimdiki zaman
+  const st  = _rp.station || curStop;
+
+  // Tüm sefer saatlerini al (her iki yön)
+  const allTimes = getTimes(st, _rp.dir);
+
+  // Geriye 2 saat + ileriye 3 saat penceresi
+  const filtered = allTimes.filter(t => {
+    const diff = toM(t) - now; // negatif = geçmiş
+    return diff >= -120 && diff <= 180;
   });
-  if (result==='created') { msg.style.color='var(--green2)'; msg.textContent='✅ Bildirim gönderildi!'; }
-  else if (result==='updated') { msg.style.color='var(--amber2)'; msg.textContent='🔄 Bildiriminiz güncellendi.'; }
-  else { msg.style.color='var(--red2)'; msg.textContent='❌ Bir hata oluştu.'; }
-  btn.disabled=false; btn.textContent='📤 Bildirimi Gönder';
-  if (result) setTimeout(closeReportModal, 1800);
+
+  if (!filtered.length) {
+    box.innerHTML = '<span style="font-size:12px;color:var(--text3)">Bu aralıkta sefer bulunamadı</span>';
+    _rp.seferSaati = null;
+    return;
+  }
+
+  // İlk gelecek seferi varsayılan seç
+  const defaultTime = filtered.find(t => toM(t) >= now) || filtered[filtered.length-1];
+
+  filtered.forEach(t => {
+    const diff = toM(t) - now;
+    const isPast = diff < 0;
+    const isSelected = t === defaultTime;
+    if (isSelected && !_rp.seferSaati) _rp.seferSaati = t;
+
+    const p = document.createElement('button');
+    p.className = 'train-pill' + (isSelected?' sel':'') + (isPast?' past':'');
+    p.dataset.time = t;
+
+    const label = isPast
+      ? `${t} <span style="font-size:10px;color:var(--red2)">(${Math.abs(diff)} dk önce)</span>`
+      : diff === 0 ? `${t} <span style="font-size:10px;color:var(--green2)">(şimdi)</span>`
+      : `${t} <span style="font-size:10px;opacity:0.7">(${diff} dk)</span>`;
+    p.innerHTML = label;
+
+    p.onclick = () => {
+      document.querySelectorAll('.train-pill').forEach(x => x.classList.remove('sel'));
+      p.classList.add('sel');
+      _rp.seferSaati = t;
+    };
+    box.appendChild(p);
+  });
+
+  // İlk seçili değer set edilmemişse default yap
+  if (!_rp.seferSaati) _rp.seferSaati = defaultTime;
 }
+
+function closeRpModal() { document.getElementById('rpModal').classList.remove('open'); }
+
+function selectRpType(btn) {
+  document.querySelectorAll('.rtype-btn[data-type]').forEach(b => b.classList.remove('sel'));
+  btn.classList.add('sel');
+  _rp.type = btn.dataset.type;
+  // Gecikme süresini sadece gecikme tipinde göster
+  document.getElementById('rpGecDiv').style.display = _rp.type === 'gecikmeli' ? 'block' : 'none';
+}
+
+async function submitRpModal() {
+  if (!_rp.type)       { showToast('⚠️ Bildirim türü seçin'); return; }
+  if (!_rp.seferSaati) { showToast('⚠️ Sefer saati seçin');   return; }
+  const btn = document.getElementById('rpSendBtn');
+  const msg = document.getElementById('rpMsg');
+  btn.disabled = true; btn.textContent = '⏳ Gönderiliyor...';
+  const hat    = _rp.dir === 0 ? 'Sincan→Kayaş' : 'Kayaş→Sincan';
+  const gecDk  = document.getElementById('rpGecDk').value;
+  const result = await window.sbSend({
+    tip:        _rp.type,
+    istasyon:   _rp.station || curStop,
+    seferSaati: _rp.seferSaati,
+    hat,
+    aciklama:   document.getElementById('rpDesc').value.trim(),
+    gec_dk:     gecDk ? parseInt(gecDk) : null
+  });
+  if (result==='created')      { msg.style.color='var(--green2)'; msg.textContent='✅ Bildirim gönderildi!'; }
+  else if (result==='updated') { msg.style.color='var(--amber2)'; msg.textContent='🔄 Bildiriminiz güncellendi.'; }
+  else                         { msg.style.color='var(--red2)';   msg.textContent='❌ Hata oluştu.'; }
+  btn.disabled=false; btn.textContent='📤 Bildirimi Gönder';
+  if (result) setTimeout(closeRpModal, 1800);
+}
+
+function reportDelay(station)     { openRpModal(station, 'gecikmeli'); }
+function reportBreakdown(station) { openRpModal(station, 'arıza'); }
+function reportTrainBreakdown()   { openRpModal(curDir===0?'Sincan→Kayaş':'Kayaş→Sincan', 'arıza'); }
 
 // AÇILIR KAPANIR FONKSİYONLARI
 function toggleMapCollapse() {
@@ -1438,52 +1589,432 @@ function buildFavList() {
   }).join('');
 }
 
-function buildNearby() {
-  const nl = document.getElementById('nearbyList');
-  if (!nl) return;
-  nl.innerHTML = '';
-  let found = 0;
-  const stops = curDir === 0 ? STOPS_ALL : [...STOPS_ALL].reverse();
-  stops.forEach(s => {
-    const fut = getFuture(s, curDir);
-    if (!fut[0]) return;
-    const m = until(fut[0]);
-    if (m > 30) return;
-    found++;
-    const u = m <= 3 ? 'urgent' : m <= 8 ? 'soon' : 'ok';
-    const colors = { urgent: 'var(--red)', soon: 'var(--amber)', ok: 'var(--green)' };
-    const item = document.createElement('div');
-    item.className = 'nb-item';
-    item.style.borderLeft = `3px solid ${colors[u]}`;
-    item.innerHTML = `<div><div class="nb-name">${s}</div><div class="ns-distance">${fut[0]}</div></div><div class="ns-distance" style="color:${colors[u]}">${mTxt(m)}</div>`;
-    item.onclick = () => { curStop = s; renderAll(); showPage('saatler', 0); };
-    nl.appendChild(item);
-  });
-  if (!found) nl.innerHTML = '<div class="empty"><span class="empty-icon">🔔</span>30 dk içinde tren yok</div>';
+function buildArizaPage() {
+  const container = document.getElementById('arizaContent');
+  if (!container) return;
+
+  if (!locationActive || !userLocation) {
+    container.innerHTML = `
+      <div style="padding:24px 16px;text-align:center">
+        <div style="font-size:52px;margin-bottom:14px">📍</div>
+        <div style="font-size:15px;font-weight:800;color:var(--text2);margin-bottom:8px">Konum Takibi Kapalı</div>
+        <div style="font-size:13px;color:var(--text3);margin-bottom:20px">Arıza veya gecikme bildirmek için konum takibini aktif edin.</div>
+        <button onclick="requestLocationPermission()" style="background:linear-gradient(135deg,#06b6d4,#0ea5e9);border:none;border-radius:20px;padding:12px 28px;font-size:14px;font-weight:800;color:#fff;cursor:pointer">📍 Konumu Aktif Et</button>
+      </div>`;
+    return;
+  }
+
+  const stationName = currentStopObj ? currentStopObj.ad : null;
+  const delayCount = stationName ? (communityReports.delay[stationName]?.count || 0) : 0;
+  const breakdownCount = stationName ? (communityReports.breakdown[stationName]?.count || 0) : 0;
+  const trainLine = curDir === 0 ? 'Sincan → Kayaş' : 'Kayaş → Sincan';
+  const trainBreakdownCount = communityReports.breakdown[trainLine]?.count || 0;
+
+  let reportBtns = '';
+  if (isAtStation && stationName) {
+    reportBtns = `
+      <div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:var(--r2);padding:16px;margin-bottom:12px">
+        <div style="font-size:13px;font-weight:800;color:var(--amber2);margin-bottom:12px">📍 Duraktasınız: <span style="color:#fff">${stationName}</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <button onclick="reportDelay('${stationName}')" style="background:rgba(245,158,11,0.2);border:1.5px solid var(--amber2);border-radius:var(--r3);padding:14px 8px;font-size:13px;font-weight:700;color:var(--amber2);cursor:pointer">
+            ⏰ Gecikme Bildir<br><span style="font-size:11px;opacity:0.7">${delayCount}/3 onay</span>
+          </button>
+          <button onclick="reportBreakdown('${stationName}')" style="background:rgba(239,68,68,0.2);border:1.5px solid var(--red2);border-radius:var(--r3);padding:14px 8px;font-size:13px;font-weight:700;color:var(--red2);cursor:pointer">
+            ⚠️ Arıza Bildir<br><span style="font-size:11px;opacity:0.7">${breakdownCount}/3 onay</span>
+          </button>
+        </div>
+        ${(delayCount >= 3 || breakdownCount >= 3) ? `<div style="margin-top:10px;padding:8px;background:rgba(16,185,129,0.15);border-radius:var(--r3);font-size:12px;color:var(--green2);text-align:center">✅ Yeterli onay toplandı! Tüm kullanıcılara bildirildi.</div>` : ''}
+      </div>`;
+  } else if (isOnTrain) {
+    reportBtns = `
+      <div style="background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.3);border-radius:var(--r2);padding:16px;margin-bottom:12px">
+        <div style="font-size:13px;font-weight:800;color:var(--blue3);margin-bottom:12px">🚆 Trende Seyahat Ediyorsunuz</div>
+        <button onclick="reportTrainBreakdown()" style="width:100%;background:rgba(239,68,68,0.2);border:1.5px solid var(--red2);border-radius:var(--r3);padding:14px;font-size:14px;font-weight:700;color:var(--red2);cursor:pointer">
+          ⚠️ Trende Arıza Bildir<br><span style="font-size:11px;opacity:0.7">${trainBreakdownCount}/3 onay</span>
+        </button>
+        ${trainBreakdownCount >= 3 ? `<div style="margin-top:10px;padding:8px;background:rgba(16,185,129,0.15);border-radius:var(--r3);font-size:12px;color:var(--green2);text-align:center">✅ Arıza onaylandı! Tüm kullanıcılara bildirildi.</div>` : ''}
+      </div>`;
+  } else {
+    reportBtns = `
+      <div style="padding:20px;text-align:center;color:var(--text3)">
+        <div style="font-size:36px;margin-bottom:10px">🚶</div>
+        <div style="font-size:13px">Bildirim yapabilmek için durakta veya trende olmanız gerekiyor.</div>
+      </div>`;
+  }
+
+  // Aktif bildirimleri listele
+  let activeReportsHtml = '';
+  let allReports = [];
+  Object.entries(communityReports.delay).forEach(([s, r]) => { if (r.count > 0) allReports.push({ icon:'⏰', label:`${s} - Gecikme`, count: r.count }); });
+  Object.entries(communityReports.breakdown).forEach(([s, r]) => { if (r.count > 0) allReports.push({ icon:'⚠️', label:`${s} - Arıza`, count: r.count }); });
+  if (allReports.length > 0) {
+    activeReportsHtml = `
+      <div style="background:var(--card2);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:12px">
+        <div style="padding:10px 14px;background:rgba(239,68,68,0.12);border-bottom:1px solid var(--border);font-size:12px;font-weight:800;color:var(--red2)">🔴 Aktif Bildirimler</div>
+        ${allReports.map(r => `
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border)">
+            <span style="font-size:13px">${r.icon} ${r.label}</span>
+            <span style="font-size:11px;font-weight:700;padding:2px 10px;border-radius:20px;background:${r.count>=3?'rgba(239,68,68,0.2)':'rgba(245,158,11,0.15)'};color:${r.count>=3?'var(--red2)':'var(--amber2)'}">${r.count}/3</span>
+          </div>`).join('')}
+      </div>`;
+  }
+
+  container.innerHTML = `<div style="padding:12px 16px">${reportBtns}${activeReportsHtml}</div>`;
 }
 
-// HARİTA
+// ════════════════════════════════════════════════════════
+//  TREN SİMÜLASYON MOTORU
+//  - Mavi  = tarifeden hesaplanan sanal konum (offline)
+//  - Yeşil = Supabase üzerinden gelen gerçek GPS verisi
+// ════════════════════════════════════════════════════════
+
+// Supabase üzerinden online tren konumlarını tutar
+// key: "yön_seferSaati"  →  { lat, lon, lastSeen (ms) }
+window.__onlineTrains = {};
+
+// Haritadaki tren markerlarını tutar  key: "yön_idx"
+const trainMarkers = {};
+
+// ── Yardımcı: dakika cinsinden şimdiki zaman (saniye hassasiyetiyle) ──
+function nowSec() {
+  const d = new Date();
+  return d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
+}
+function toSec(t) {
+  const [h, m] = t.split(':').map(Number);
+  return h * 3600 + m * 60;
+}
+
+// ── Aktif sefer + interpolasyon hesabı ──
+function getTrainPositions() {
+  const now = nowSec();
+  const result = [];
+
+  // Her iki yön için hesapla
+  [
+    { schedule: SCHEDULE_SINCAN_TO_KAYAS, stops: CT_DURAKLAR,              dir: 0, label: 'SK' },
+    { schedule: SCHEDULE_KAYAS_TO_SINCAN, stops: [...CT_DURAKLAR].reverse(), dir: 1, label: 'KS' }
+  ].forEach(({ schedule, stops, dir, label }) => {
+
+    const terminalStop = stops[0].ad;
+    const terminalTimes = schedule[terminalStop];
+    if (!terminalTimes) return;
+
+    terminalTimes.forEach((kalkis, idx) => {
+      const kalkisSn = toSec(kalkis);
+
+      // Son durağın varış zamanı
+      const sonDurak = stops[stops.length - 1].ad;
+      const sonsaatArr = schedule[sonDurak];
+      if (!sonsaatArr || !sonsaatArr[idx]) return;
+      const varisSn = toSec(sonsaatArr[idx]);
+
+      // Yolda değil — henüz kalkmadı veya tamamladı
+      if (now < kalkisSn || now > varisSn + 120) return;
+
+      // Hangi iki durak arasında?
+      let posLat = null, posLon = null;
+      let sonrakiDurak = null, mevcutDurak = null;
+      let interpolationT = 0;
+
+      for (let i = 0; i < stops.length - 1; i++) {
+        const durA = stops[i].ad;
+        const durB = stops[i + 1].ad;
+        const saatA = schedule[durA]?.[idx];
+        const saatB = schedule[durB]?.[idx];
+        if (!saatA || !saatB) continue;
+        const snA = toSec(saatA);
+        const snB = toSec(saatB);
+
+        if (now >= snA && now < snB) {
+          const t = Math.min(1, Math.max(0, (now - snA) / (snB - snA)));
+          interpolationT = t;
+          posLat = stops[i].lat + t * (stops[i + 1].lat - stops[i].lat);
+          posLon = stops[i].lon + t * (stops[i + 1].lon - stops[i].lon);
+          mevcutDurak = durA;
+          sonrakiDurak = durB;
+          break;
+        }
+
+        // Duraklama süresi — tam duraktaysa
+        if (now >= snB && i + 1 < stops.length - 1) {
+          const saatC = schedule[stops[i + 2]?.ad]?.[idx];
+          if (saatC && now < toSec(saatC)) {
+            posLat = stops[i + 1].lat;
+            posLon = stops[i + 1].lon;
+            mevcutDurak = durB;
+            sonrakiDurak = stops[i + 2]?.ad || durB;
+            interpolationT = 0;
+            break;
+          }
+        }
+      }
+
+      if (posLat === null) return;
+
+      // Online veri var mı kontrol et
+      const onlineKey = label + '_' + kalkis;
+      const onlineData = window.__onlineTrains[onlineKey];
+      const isOnline = onlineData && (Date.now() - onlineData.lastSeen) < 45000;
+
+      result.push({
+        key: label + '_' + idx,
+        dir,
+        idx,
+        seferSaati: kalkis,
+        lat: isOnline ? onlineData.lat : posLat,
+        lon: isOnline ? onlineData.lon : posLon,
+        isOnline,
+        mevcutDurak,
+        sonrakiDurak,
+        label: dir === 0 ? 'Sincan→Kayaş' : 'Kayaş→Sincan',
+        t: interpolationT
+      });
+    });
+  });
+
+  return result;
+}
+
+// ── Tren marker ikonu oluştur ──
+function trainIcon(isOnline, dir) {
+  // Online (gerçek GPS) → Yeşil, Offline (tarifeden) → Mavi
+  const bg    = isOnline ? '#10b981' : '#3b82f6';
+  const glow  = isOnline ? 'rgba(16,185,129,0.6)' : 'rgba(59,130,246,0.5)';
+  const arrow = dir === 0 ? '→' : '←';
+  return L.divIcon({
+    className: '',
+    html: `<div style="
+      position:relative;
+      background:${bg};
+      color:#fff;
+      font-size:10px;
+      font-weight:800;
+      padding:3px 6px;
+      border-radius:10px;
+      border:2px solid rgba(255,255,255,0.9);
+      box-shadow:0 0 8px ${glow};
+      white-space:nowrap;
+      line-height:1.2;
+      text-align:center;
+    ">🚆${arrow}${isOnline ? '<span style="display:inline-block;width:5px;height:5px;background:#fff;border-radius:50%;margin-left:3px;vertical-align:middle;animation:trainPulse 1s infinite"></span>' : ''}</div>`,
+    iconSize: [null, null],
+    iconAnchor: [18, 12]
+  });
+}
+
+// ── Haritadaki tren markerlarını güncelle ──
+function updateTrainMarkers() {
+  if (!map) return;
+
+  const aktif = getTrainPositions();
+  const aktifKeys = new Set(aktif.map(t => t.key));
+
+  // Eski / tamamlanmış trenleri temizle
+  Object.keys(trainMarkers).forEach(k => {
+    if (!aktifKeys.has(k)) {
+      map.removeLayer(trainMarkers[k]);
+      delete trainMarkers[k];
+    }
+  });
+
+  // Aktif trenleri güncelle veya oluştur
+  aktif.forEach(train => {
+    const popupHtml = `
+      <div style="font-family:Inter,sans-serif;min-width:160px">
+        <div style="font-weight:800;font-size:13px;margin-bottom:6px">
+          🚆 ${train.label}
+        </div>
+        <div style="font-size:11px;color:#666;margin-bottom:2px">
+          ⏱ Sefer: <b>${train.seferSaati}</b>
+        </div>
+        <div style="font-size:11px;color:#666;margin-bottom:2px">
+          📍 ${train.mevcutDurak || '—'}
+        </div>
+        <div style="font-size:11px;color:#666;margin-bottom:6px">
+          ➡ ${train.sonrakiDurak || '—'}
+        </div>
+        <div style="font-size:10px;padding:3px 8px;border-radius:10px;display:inline-block;
+          background:${train.isOnline ? 'rgba(16,185,129,0.15)' : 'rgba(59,130,246,0.15)'};
+          color:${train.isOnline ? '#10b981' : '#3b82f6'};
+          border:1px solid ${train.isOnline ? '#10b981' : '#3b82f6'};">
+          ${train.isOnline ? '🟢 Canlı GPS' : '🔵 Tarifeden'}
+        </div>
+      </div>`;
+
+    if (trainMarkers[train.key]) {
+      trainMarkers[train.key].setLatLng([train.lat, train.lon]);
+      // İkon durumu değiştiyse güncelle (online ↔ offline geçişi)
+      trainMarkers[train.key].setIcon(trainIcon(train.isOnline, train.dir));
+      trainMarkers[train.key].getPopup()?.setContent(popupHtml);
+    } else {
+      const m = L.marker([train.lat, train.lon], {
+        icon: trainIcon(train.isOnline, train.dir),
+        zIndexOffset: 500
+      }).addTo(map);
+      m.bindPopup(popupHtml);
+      trainMarkers[train.key] = m;
+    }
+  });
+
+  // Sayacı güncelle
+  const el = document.getElementById('trainCountBadge');
+  if (el) el.textContent = aktif.length + ' tren';
+}
+
+// ── Supabase'den gerçek GPS verilerini al ──
+function startOnlineTrainListener() {
+  // Realtime channel — tren GPS bildirimleri
+  _db.channel('train_locations')
+    .on('postgres_changes', {
+      event: '*',
+      schema: 'public',
+      table: 'train_locations'
+    }, (payload) => {
+      const r = payload.new;
+      if (!r || !r.lat || !r.lon) return;
+      const key = r.direction + '_' + r.sefer_saati;
+      window.__onlineTrains[key] = {
+        lat: r.lat,
+        lon: r.lon,
+        lastSeen: Date.now()
+      };
+      // Harita açıksa anında güncelle
+      if (map) updateTrainMarkers();
+    })
+    .subscribe();
+
+  // İlk yükleme — son 2 dakika içindeki kayıtları çek
+  _db.from('train_locations')
+    .select('*')
+    .gte('updated_at', new Date(Date.now() - 120000).toISOString())
+    .then(({ data }) => {
+      if (!data) return;
+      data.forEach(r => {
+        if (!r.lat || !r.lon) return;
+        const key = r.direction + '_' + r.sefer_saati;
+        window.__onlineTrains[key] = {
+          lat: r.lat,
+          lon: r.lon,
+          lastSeen: new Date(r.updated_at).getTime()
+        };
+      });
+      if (map) updateTrainMarkers();
+    });
+}
+
+// ── Kendi GPS konumunu Supabase'e yayınla (trende olunca) ──
+let _broadcastInterval = null;
+
+function startGpsBroadcast() {
+  if (_broadcastInterval) return;
+  _broadcastInterval = setInterval(async () => {
+    if (!isOnTrain || !userLocation || !locationActive) return;
+    const activeTrains = getTrainPositions().filter(t => !t.isOnline);
+    if (!activeTrains.length) return;
+
+    // En yakın tarife trenini bul
+    let nearest = null, minDist = Infinity;
+    activeTrains.forEach(t => {
+      const d = haversine(userLocation.lat, userLocation.lon, t.lat, t.lon);
+      if (d < minDist) { minDist = d; nearest = t; }
+    });
+
+    if (!nearest || minDist > 600) return; // 600m'den uzaksa eşleştirme
+
+    await _db.from('train_locations').upsert({
+      direction: nearest.dir === 0 ? 'SK' : 'KS',
+      sefer_saati: nearest.seferSaati,
+      lat: userLocation.lat,
+      lon: userLocation.lon,
+      uid: MY_UID,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'direction,sefer_saati' });
+  }, 8000); // 8 saniyede bir yayınla
+}
+
+function stopGpsBroadcast() {
+  if (_broadcastInterval) {
+    clearInterval(_broadcastInterval);
+    _broadcastInterval = null;
+  }
+}
+
+// ── CSS animasyonu tren pulsuna ekle ──
+(function() {
+  const s = document.createElement('style');
+  s.textContent = `@keyframes trainPulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(1.4)} }`;
+  document.head.appendChild(s);
+})();
+
+// ════════════════════════════════════════════════════════
+//  HARİTA
+// ════════════════════════════════════════════════════════
 function initMap() {
   if (map) return;
   const container = document.getElementById('mapContainer');
   if (!container) return;
   map = L.map('mapContainer').setView([39.93, 32.78], 11);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution: '&copy; OSM & CartoDB', subdomains: 'abcd' }).addTo(map);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OSM &amp; CartoDB', subdomains: 'abcd'
+  }).addTo(map);
+
+  // Güzergah çizgisi
+  const routeCoords = CT_DURAKLAR.map(s => [s.lat, s.lon]);
+  L.polyline(routeCoords, {
+    color: 'rgba(59,130,246,0.5)',
+    weight: 3,
+    dashArray: '6 4'
+  }).addTo(map);
+
+  // Durak markerları
   CT_DURAKLAR.forEach(stop => {
-    const color = (stop.ad === 'Sincan' || stop.ad === 'Kayaş') ? '#f87171' : '#3b82f6';
-    const marker = L.marker([stop.lat, stop.lon], { icon: L.divIcon({ html: `<div style="background:${color}; width:12px; height:12px; border-radius:50%; border:2px solid white;"></div>`, iconSize: [12, 12] }) }).addTo(map);
-    marker.bindPopup(`<b>${stop.ad}</b><br><button onclick="selectStopFromMap('${stop.ad}')">Saatleri Gör</button>`);
+    const isTerminal = (stop.ad === 'Sincan' || stop.ad === 'Kayaş');
+    const color = isTerminal ? '#f87171' : '#3b82f6';
+    const size  = isTerminal ? 14 : 10;
+    const m = L.marker([stop.lat, stop.lon], {
+      icon: L.divIcon({
+        className: '',
+        html: `<div style="background:${color};width:${size}px;height:${size}px;border-radius:50%;border:2px solid rgba(255,255,255,0.9);"></div>`,
+        iconSize: [size, size],
+        iconAnchor: [size/2, size/2]
+      })
+    }).addTo(map);
+    m.bindPopup(`<b>${stop.ad}</b><br><button onclick="selectStopFromMap('${stop.ad}')" style="margin-top:6px;padding:4px 10px;border-radius:6px;border:none;background:#3b82f6;color:#fff;cursor:pointer;font-size:12px">Saatleri Gör</button>`);
   });
+
+  // Tren simülasyonunu başlat
+  updateTrainMarkers();
+
+  // Online listener
+  startOnlineTrainListener();
+
   if (userLocation) updateMapLocation(userLocation.lat, userLocation.lon);
   setTimeout(() => map?.invalidateSize(), 200);
 }
 
 function updateMapLocation(lat, lon) {
   if (!map) return;
-  if (userMarker) userMarker.setLatLng([lat, lon]);
-  else { userMarker = L.marker([lat, lon], { icon: L.divIcon({ html: `<div style="background:#10b981; width:14px; height:14px; border-radius:50%; border:2px solid white; box-shadow:0 0 8px #10b981;"></div>`, iconSize: [14, 14] }) }).addTo(map); userMarker.bindPopup('📍 Siz buradasınız'); }
+  if (userMarker) {
+    userMarker.setLatLng([lat, lon]);
+  } else {
+    userMarker = L.marker([lat, lon], {
+      icon: L.divIcon({
+        className: '',
+        html: `<div style="background:#10b981;width:16px;height:16px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 10px #10b981;"></div>`,
+        iconSize: [16, 16],
+        iconAnchor: [8, 8]
+      }),
+      zIndexOffset: 1000
+    }).addTo(map);
+    userMarker.bindPopup('📍 Siz buradasınız');
+  }
   if (map.getZoom() < 13) map.setView([lat, lon], 14);
   updateNearbyStopsList();
+
+  // Trende isek GPS yayınını başlat
+  if (isOnTrain && locationActive) startGpsBroadcast();
+  else stopGpsBroadcast();
 }
 
 function updateNearbyStopsList() {
@@ -1496,7 +2027,7 @@ function updateNearbyStopsList() {
 function selectStopFromMap(name) { curStop = name; renderAll(); showPage('saatler', 0); }
 
 // PAGES
-const PAGE_ORDER = ['saatler', 'duraklar', 'harita', 'fav', 'nearby', 'about'];
+const PAGE_ORDER = ['saatler', 'duraklar', 'harita', 'fav', 'ariza', 'about'];
 let curPageIdx = 0;
 
 function showPage(n, i) {
@@ -1514,7 +2045,7 @@ function showPage(n, i) {
     if (communityOpen) document.getElementById('communityCollapseContent')?.classList.add('open');
   }
   if (n === 'fav') buildFavList();
-  if (n === 'nearby') buildNearby();
+  if (n === 'ariza') buildArizaPage();
 }
 
 function initSwipe() {}
@@ -1539,43 +2070,100 @@ function tickClock() {
   if (dateEl) { const months = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık']; const days = ['Pazar', 'Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi']; dateEl.textContent = days[wd] + ', ' + d.getDate() + ' ' + months[d.getMonth()] + ' ' + d.getFullYear(); }
 }
 
-// PWA KURULUM
-let deferredPrompt;
+// ════════════════════════════════════════════════════════
+//  PWA KURULUM — Ana ekrana ekle
+// ════════════════════════════════════════════════════════
+let deferredPrompt = null;
+
+function isIOS() {
+  return /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
+}
+function isInStandaloneMode() {
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+}
+
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredPrompt = e;
+  // Eski küçük banner'ı göster (alt kısım)
   document.getElementById('installBanner').style.display = 'flex';
 });
 
-document.getElementById('installBtn')?.addEventListener('click', async () => {
-  if (!deferredPrompt) return;
-  deferredPrompt.prompt();
-  const { outcome } = await deferredPrompt.userChoice;
-  deferredPrompt = null;
+function triggerPwaInstall() {
+  if (deferredPrompt) {
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(() => {
+      deferredPrompt = null;
+      closePwaOverlay();
+    });
+  }
+}
+
+function openPwaOverlay() {
+  const overlay = document.getElementById('pwaOverlay');
+  overlay.classList.add('open');
+  // iOS vs Android tespiti
+  if (isIOS()) {
+    document.getElementById('pwaIosSteps').style.display = 'block';
+    document.getElementById('pwaAndroidBtn').style.display = 'none';
+    document.getElementById('pwaGeneralSteps').style.display = 'none';
+  } else if (deferredPrompt) {
+    document.getElementById('pwaAndroidBtn').style.display = 'flex';
+    document.getElementById('pwaIosSteps').style.display = 'none';
+    document.getElementById('pwaGeneralSteps').style.display = 'none';
+  } else {
+    document.getElementById('pwaGeneralSteps').style.display = 'block';
+    document.getElementById('pwaAndroidBtn').style.display = 'none';
+    document.getElementById('pwaIosSteps').style.display = 'none';
+  }
+}
+
+function closePwaOverlay() {
+  document.getElementById('pwaOverlay').classList.remove('open');
+  localStorage.setItem('bkr_pwa_dismissed', Date.now());
+}
+
+document.getElementById('installBtn')?.addEventListener('click', () => {
+  openPwaOverlay();
   document.getElementById('installBanner').style.display = 'none';
 });
+
+// PWA overlay — otomatik aç (ilk 3 günde, günde 1 kez, standalone değilse)
+function maybeShowPwaPrompt() {
+  if (isInStandaloneMode()) return;
+  const last = parseInt(localStorage.getItem('bkr_pwa_dismissed') || '0');
+  const hoursSince = (Date.now() - last) / (1000 * 60 * 60);
+  if (hoursSince > 24) {
+    setTimeout(openPwaOverlay, 2500);
+  }
+}
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
 // INIT
+try { const saved = localStorage.getItem('bkr_favs'); if (saved) favs = JSON.parse(saved); } catch(e) {}
 setInterval(tickClock, 1000);
 tickClock();
 renderAll();
 initSwipe();
+maybeShowPwaPrompt();
 
 setInterval(() => {
+  buildNextTrain();
+  buildTrainList();
+  if (curPageIdx === 3) buildFavList();
+  if (curPageIdx === 4) buildArizaPage();
+  if (curPageIdx === 2 && map) {
+    updateTrainMarkers();
+    if (userLocation) updateMapLocation(userLocation.lat, userLocation.lon);
+  }
   if (locationActive) {
-    buildNextTrain();
-    buildTrainList();
-    if (curPageIdx === 3) buildFavList();
-    if (curPageIdx === 4) buildNearby();
-    if (curPageIdx === 2 && map && userLocation) updateMapLocation(userLocation.lat, userLocation.lon);
     updateBigAlertCard();
     updateCommunityPanel();
   }
-}, 3000);
+}, 5000);
 </script>
 </body>
 </html>
