@@ -462,6 +462,15 @@ body {
 .si-fav.favorited { color: var(--amber2); }
 .search-box { width: 100%; background: var(--bg3); border: 1px solid var(--border); border-radius: var(--r2); padding: 10px 14px; font-size: 14px; color: var(--text); outline: none; }
 .stops-dir-wrap { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px 16px; }
+.train-count-badge {
+    background: var(--green2);
+    color: #000;
+    font-size: 10px;
+    font-weight: 800;
+    padding: 2px 6px;
+    border-radius: 12px;
+    margin-left: 8px;
+}
 </style>
 </head>
 <body>
@@ -580,9 +589,9 @@ body {
                 <div class="page-header">🗺️ BAŞKENTRAY DURAKLARI HARİTASI</div>
                 <div id="mapContainer" class="map-container"></div>
                 <div style="display:flex; gap:10px; padding:0 16px 8px; flex-wrap:wrap">
-                    <div style="display:flex; align-items:center; gap:5px; font-size:11px"><div style="width:10px;height:10px;border-radius:50%;background:#3b82f6"></div>Tarifeden (simüle)</div>
                     <div style="display:flex; align-items:center; gap:5px; font-size:11px"><div style="width:10px;height:10px;border-radius:50%;background:#10b981"></div>Canlı GPS (ortalama konum)</div>
                     <div style="display:flex; align-items:center; gap:5px; font-size:11px"><div style="width:10px;height:10px;border-radius:50%;background:#10b981;border:2px solid #fff"></div>Siz buradasınız</div>
+                    <div style="display:flex; align-items:center; gap:5px; font-size:11px"><div style="width:10px;height:10px;border-radius:50%;background:#3b82f6"></div>Diğer kullanıcılar</div>
                 </div>
                 
                 <div class="community-panel">
@@ -622,7 +631,7 @@ body {
                         <div style="font-size:48px; margin-bottom:8px">👨‍💻</div>
                         <div style="font-size:24px; font-weight:900; background:linear-gradient(90deg,#06b6d4,#22d3ee); -webkit-background-clip:text; -webkit-text-fill-color:transparent">EREN SARIGÜL</div>
                         <div style="font-size:14px; color:#22d3ee">Bilgisayar Mühendisi</div>
-                        <div style="font-size:12px; color:var(--text3); margin-top:12px">© 2025 - 2026 | Versiyon 2.0</div>
+                        <div style="font-size:12px; color:var(--text3); margin-top:12px">© 2025 - 2026 | Versiyon 3.0 (Konum Bazlı Tren Takibi)</div>
                     </div>
                 </div>
             </div>
@@ -763,7 +772,9 @@ let simulationInterval = null;
 let currentSimIndex = 0;
 let _rp = { station: null, type: null, seferSaati: null, dir: null };
 let trainMarkers = {};
+let otherUserMarkers = {};
 let broadcastInterval = null;
+let lastLocationForDirection = null;
 window.__onlineTrains = {};
 window.__supaReports = {};
 
@@ -792,78 +803,299 @@ function haversine(lat1, lon1, lat2, lon2) { const R=6371000; const dLat=(lat2-l
 function showToast(msg) { let t=document.getElementById('ctToast'); if(!t){t=document.createElement('div');t.id='ctToast';t.className='ct-toast';document.body.appendChild(t);} t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),3000); }
 
 // ════════════════════════════════════════════════════════
-//  SUPABASE BİLDİRİM FONKSİYONLARI
+//  YENİ: GERÇEK ZAMANLI KONUM DİNLEME (DİĞER KULLANICILAR İÇİN)
 // ════════════════════════════════════════════════════════
-function startSupabaseListener() {
-    _db.channel('rpt').on('postgres_changes', { event:'*', schema:'public', table:'reports' }, () => fetchReports()).subscribe();
-    fetchReports();
-    _db.channel('train_locations_channel').on('postgres_changes', { event:'*', schema:'public', table:'train_locations' }, (payload) => {
-        const r = payload.new;
-        if (r && r.lat && r.lon) {
-            const key = r.direction + '_' + r.sefer_saati;
-            window.__onlineTrains[key] = { lat: r.lat, lon: r.lon, lastSeen: Date.now() };
-            if (map) updateTrainMarkers();
+// ========== POLLING İLE DİĞER KULLANICILARI GETİR (Realtime yoksa) ==========
+let pollingInterval = null;
+let otherUserMarkers = {};  // Diğer kullanıcıların marker'ları
+
+function startPollingUsers() {
+    if (pollingInterval) clearInterval(pollingInterval);
+    
+    pollingInterval = setInterval(async () => {
+        // Sadece harita sayfası açıkken çalıştır
+        if (!map || curPageIdx !== 2) return;
+        
+        try {
+            // Son 2 dakika içinde güncellenmiş tüm kullanıcıları getir (kendim hariç)
+            const { data: users, error } = await _db
+                .from('train_locations')
+                .select('*')
+                .gte('updated_at', new Date(Date.now() - 120000).toISOString())
+                .neq('uid', MY_UID);
+            
+            if (error) {
+                console.error('Polling hatası:', error);
+                return;
+            }
+            
+            if (users && users.length > 0) {
+                console.log(`👥 ${users.length} başka kullanıcı bulundu (polling)`);
+                updateUsersOnMap(users);
+            } else {
+                // Kullanıcı yoksa markerları temizle
+                clearUserMarkers();
+            }
+        } catch (err) {
+            console.error('Polling hatası:', err);
         }
-    }).subscribe();
+    }, 5000); // Her 5 saniyede bir sorgula
 }
 
-async function fetchReports() {
-    const since = new Date(Date.now() - 2*60*60*1000).toISOString();
-    const { data } = await _db.from('reports').select('*').gte('updated_at', since).order('updated_at', { ascending: false });
-    if (!data) return;
-    window.__supaReports = {};
-    const delay = {}, breakdown = {};
-    data.forEach(r => {
-        if ((r.retler||0) >= (r.onaylar||0) + 2) return;
-        window.__supaReports[r.id] = r;
-        const st = r.istasyon;
-        const bucket = r.tip === 'arıza' ? breakdown : delay;
-        if (!bucket[st]) bucket[st] = { count:0, onaylar:0 };
-        bucket[st].count++; bucket[st].onaylar += (r.onaylar||0);
-    });
-    communityReports.delay = delay;
-    communityReports.breakdown = breakdown;
-    updateBigAlertCard();
-    updateCommunityPanel();
-    if (curPageIdx === 4) buildArizaPage();
-}
-
-window.sbSend = async function({ tip, istasyon, seferSaati, hat, aciklama, gec_dk }) {
-    const dayKey = 'bkr_day_' + new Date().toDateString();
-    const cnt = parseInt(localStorage.getItem(dayKey)||'0');
-    if (cnt >= 10) { showToast("🚫 Günlük 10 bildirim limitine ulaştınız"); return false; }
-    const ck = (MY_UID+'_'+hat+'_'+seferSaati).replace(/[^a-zA-Z0-9_]/g,'_');
-    const { data: ex } = await _db.from('reports').select('id').eq('composite_key', ck).maybeSingle();
-    if (ex) {
-        await _db.from('reports').update({ tip, aciklama, gec_dk: gec_dk||null, updated_at: new Date().toISOString() }).eq('id', ex.id);
-        return 'updated';
-    } else {
-        const { error } = await _db.from('reports').insert({
-            uid: MY_UID, composite_key: ck, tip, istasyon, sefer_saati: seferSaati, hat,
-            aciklama: (aciklama||'').slice(0,200), gec_dk: gec_dk||null,
-            onaylar:0, retler:0, onaylayanlar:[], reddedenler:[],
-            created_at: new Date().toISOString(), updated_at: new Date().toISOString()
+function updateUsersOnMap(users) {
+    if (!map) return;
+    
+    // Eski markerları temizle
+    clearUserMarkers();
+    
+    // Yeni markerları ekle
+    users.forEach(user => {
+        const key = `user_${user.uid}`;
+        const directionIcon = user.direction === 'SK' || user.direction === 'EAST' ? '→' : '←';
+        const speedKmh = Math.round(user.speed || 0);
+        
+        const userIcon = L.divIcon({
+            html: `<div style="background:#3b82f6;width:30px;height:30px;border-radius:50%;border:2px solid white;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:bold;">👤</div>`,
+            iconSize: [30, 30],
+            iconAnchor: [15, 15],
+            className: 'user-marker'
         });
-        if (error) { console.error(error); return false; }
-        localStorage.setItem(dayKey, cnt+1);
-        return 'created';
+        
+        const popupHtml = `
+            <div style="background:#1e293b;padding:10px;border-radius:12px;min-width:150px;">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                    <span style="font-size:20px;">👤</span>
+                    <b style="color:#60a5fa;">${user.uid.slice(-8)}</b>
+                </div>
+                <div style="font-size:12px;color:#94a3b8;">
+                    🚆 ${directionIcon} ${speedKmh} km/h
+                </div>
+                <div style="font-size:10px;color:#64748b;margin-top:4px;">
+                    📍 ${user.lat.toFixed(5)}, ${user.lon.toFixed(5)}
+                </div>
+                <div style="font-size:9px;color:#22d3ee;margin-top:4px;">
+                    🕐 ${new Date(user.updated_at).toLocaleTimeString()}
+                </div>
+            </div>
+        `;
+        
+        otherUserMarkers[key] = L.marker([user.lat, user.lon], { icon: userIcon })
+            .addTo(map)
+            .bindPopup(popupHtml);
+    });
+    
+    if (users.length > 0) {
+        console.log(`✅ ${users.length} kullanıcı haritaya eklendi`);
     }
-};
+}
 
-window.sbVote = async function(id, voteType) {
-    const { data:r } = await _db.from('reports').select('*').eq('id', id).single();
-    if (!r) return;
-    if (r.uid === MY_UID) { showToast("🚫 Kendi bildiriminize oy veremezsiniz"); return; }
-    const oy = r.onaylayanlar||[], ret = r.reddedenler||[];
-    if (oy.includes(MY_UID)||ret.includes(MY_UID)) { showToast("⚠️ Zaten oy verdiniz"); return; }
-    if (voteType==='onay') {
-        await _db.from('reports').update({ onaylar:(r.onaylar||0)+1, onaylayanlar:[...oy,MY_UID], updated_at:new Date().toISOString() }).eq('id',id);
-        showToast("✅ Onaylandı");
-    } else {
-        await _db.from('reports').update({ retler:(r.retler||0)+1, reddedenler:[...ret,MY_UID], updated_at:new Date().toISOString() }).eq('id',id);
-        showToast("👎 Reddedildi");
+function clearUserMarkers() {
+    Object.keys(otherUserMarkers).forEach(key => {
+        if (map && map.hasLayer(otherUserMarkers[key])) {
+            map.removeLayer(otherUserMarkers[key]);
+        }
+        delete otherUserMarkers[key];
+    });
+}
+
+// Aynı trendeki kullanıcıları kontrol et (polling versiyonu)
+function checkNearbyUsersPolling() {
+    if (!userLocation || !locationActive || !movementDirection) return;
+    
+    Object.values(otherUserMarkers).forEach(marker => {
+        const latLng = marker.getLatLng();
+        if (!latLng) return;
+        
+        const distance = haversine(
+            userLocation.lat, userLocation.lon,
+            latLng.lat, latLng.lng
+        );
+        
+        if (distance < 500) {
+            // Aynı trende başka kullanıcı var!
+            if (distance < 100) {
+                showToast(`🚆 ${Math.round(distance)}m mesafede başka bir yolcu var!`);
+            }
+        }
+    });
+}
+
+
+
+// ════════════════════════════════════════════════════════
+//  YENİ: DİĞER KULLANICILARI HARİTADA GÖSTER
+// ════════════════════════════════════════════════════════
+async function updateOtherUsersOnMap() {
+    if (!map) return;
+    
+    const { data: users, error } = await _db
+        .from('train_locations')
+        .select('*')
+        .gte('updated_at', new Date(Date.now() - 120000).toISOString())
+        .neq('uid', MY_UID);
+    
+    if (error || !users) return;
+    
+    Object.keys(otherUserMarkers).forEach(key => {
+        if (!users.some(u => `user_${u.uid}` === key)) {
+            map.removeLayer(otherUserMarkers[key]);
+            delete otherUserMarkers[key];
+        }
+    });
+    
+    users.forEach(user => {
+        const key = `user_${user.uid}`;
+        const directionIcon = user.direction === 'SK' || user.direction === 'EAST' ? '→' : '←';
+        const speedKmh = Math.round(user.speed || 0);
+        
+        const popupHtml = `
+            <div style="background:#1e293b;padding:8px;border-radius:12px;">
+                <b>👤 Diğer Kullanıcı</b><br>
+                <span style="font-size:11px;">${user.uid.slice(-8)}</span><br>
+                <span style="font-size:10px;color:#94a3b8;">🚆 ${directionIcon} ${speedKmh} km/h</span>
+                <div style="margin-top:6px;font-size:9px;color:#22d3ee;">
+                    Son: ${new Date(user.updated_at).toLocaleTimeString()}
+                </div>
+            </div>
+        `;
+        
+        const userIcon = L.divIcon({
+            html: `<div style="background:#3b82f6;width:28px;height:28px;border-radius:50%;border:2px solid white;display:flex;align-items:center;justify-content:center;font-size:14px;">👤</div>`,
+            iconSize: [28, 28],
+            iconAnchor: [14, 14],
+            className: 'user-marker'
+        });
+        
+        if (otherUserMarkers[key]) {
+            otherUserMarkers[key].setLatLng([user.lat, user.lon]);
+            otherUserMarkers[key].getPopup()?.setContent(popupHtml);
+        } else {
+            otherUserMarkers[key] = L.marker([user.lat, user.lon], { icon: userIcon })
+                .addTo(map)
+                .bindPopup(popupHtml);
+        }
+    });
+    
+    if (users.length > 0) {
+        console.log(`👥 ${users.length} aktif kullanıcı haritada gösteriliyor`);
     }
-};
+}
+
+// ════════════════════════════════════════════════════════
+//  YENİ: AYNI TRENDEKİ KULLANICILARI KONTROL ET
+// ════════════════════════════════════════════════════════
+async function checkNearbyUsersOnSameTrain(otherUser) {
+    if (!userLocation || !locationActive || !movementDirection) return;
+    
+    const distance = haversine(
+        userLocation.lat, userLocation.lon,
+        otherUser.lat, otherUser.lon
+    );
+    
+    const sameDirection = (
+        (movementDirection === 'EAST' && (otherUser.direction === 'SK' || otherUser.direction === 'EAST')) ||
+        (movementDirection === 'WEST' && (otherUser.direction === 'KS' || otherUser.direction === 'WEST'))
+    );
+    
+    if (sameDirection && distance < 500) {
+        console.log(`🚆 Aynı trende ${otherUser.uid.slice(-8)} kullanıcısı var! Mesafe: ${Math.round(distance)}m`);
+        
+        if (distance < 100) {
+            showToast(`🚆 Trende ${Math.round(distance)}m mesafede başka bir yolcu var!`);
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════
+//  YENİ: TRENİN DURAĞA GELİP GELMEDİĞİNİ KONTROL ET
+// ════════════════════════════════════════════════════════
+async function checkTrainArrivalAtStop(stopName) {
+    const stopCoord = CT_DURAKLAR.find(s => s.ad === stopName);
+    if (!stopCoord) return false;
+    
+    const { data: nearbyUsers, error } = await _db
+        .from('train_locations')
+        .select('*')
+        .gte('updated_at', new Date(Date.now() - 180000).toISOString());
+    
+    if (error || !nearbyUsers) return false;
+    
+    const usersAtStop = nearbyUsers.filter(user => {
+        const dist = haversine(user.lat, user.lon, stopCoord.lat, stopCoord.lon);
+        return dist < 100;
+    });
+    
+    if (usersAtStop.length >= 2) {
+        showToast(`🚉 ${stopName} durağına tren geldi! (${usersAtStop.length} kişi onayladı)`);
+        
+        const container = document.getElementById('bigAlertCard');
+        if (container) {
+            container.style.display = 'block';
+            container.className = 'alert-card on-train';
+            container.innerHTML = `
+                <div class="alert-card-header">
+                    <span class="alert-icon">🚉</span>
+                    <div class="alert-title">TREN DURAKTA!</div>
+                    <div class="alert-time">${new Date().toLocaleTimeString().slice(0,5)}</div>
+                </div>
+                <div class="alert-message">
+                    <strong>${stopName}</strong> durağına tren geldi! 
+                    ${usersAtStop.length} kullanıcı bu durakta olduğunu bildirdi.
+                </div>
+                <div class="alert-actions">
+                    <button class="alert-btn confirm" onclick="confirmTrainArrival('${stopName}')">
+                        ✅ Ben de buradayım
+                    </button>
+                </div>
+            `;
+        }
+        return true;
+    }
+    return false;
+}
+
+// ════════════════════════════════════════════════════════
+//  YENİ: TREN GELDİĞİNİ ONAYLA
+// ════════════════════════════════════════════════════════
+async function confirmTrainArrival(stopName) {
+    const stopCoord = CT_DURAKLAR.find(s => s.ad === stopName);
+    if (!stopCoord) return;
+    
+    await sendLocationWithDirection(stopCoord.lat, stopCoord.lon, movementDirection || 'EAST', 0);
+    showToast(`✅ ${stopName} durağında olduğunuzu bildirdiniz!`);
+    await checkTrainArrivalAtStop(stopName);
+}
+
+// ════════════════════════════════════════════════════════
+//  PERİYODİK TREN KONTROLÜ
+// ════════════════════════════════════════════════════════
+function startPeriodicTrainCheck() {
+    setInterval(async () => {
+        if (!locationActive || !currentStopObj) return;
+        await checkTrainArrivalAtStop(currentStopObj.ad);
+        
+        if (isOnTrain && nextStopObj && userLocation?.speed > 10) {
+            const distToNext = haversine(
+                userLocation.lat, userLocation.lon,
+                nextStopObj.lat, nextStopObj.lon
+            );
+            if (distToNext < 500 && distToNext > 100) {
+                showToast(`🚆 ${nextStopObj.ad} durağına yaklaşılıyor (${Math.round(distToNext)}m)`);
+            }
+        }
+    }, 10000);
+}
+
+// ════════════════════════════════════════════════════════
+//  HAREKET YÖNÜ HESAPLAMA
+// ════════════════════════════════════════════════════════
+function calculateMovementDirection(prevLat, prevLon, currLat, currLon) {
+    if (!prevLat || !prevLon) return null;
+    const distance = haversine(prevLat, prevLon, currLat, currLon);
+    if (distance < 10) return null;
+    const lonDiff = currLon - prevLon;
+    return lonDiff > 0 ? 'EAST' : 'WEST';
+}
 
 // ════════════════════════════════════════════════════════
 //  KONUM TAKİBİ
@@ -887,6 +1119,8 @@ function stopLocationTracking() {
     userLocation = null;
     isAtStation = false;
     isOnTrain = false;
+    movementDirection = null;
+    lastLocationForDirection = null;
     updateCommunityPanel();
 }
 
@@ -907,7 +1141,16 @@ function startLocationTracking() {
             if (now - lastLocationUpdate < 2000) return;
             lastLocationUpdate = now;
             const { latitude, longitude, speed } = pos.coords;
-            userLocation = { lat: latitude, lon: longitude, speed: speed || 0 };
+            
+            if (lastLocationForDirection) {
+                const newDirection = calculateMovementDirection(
+                    lastLocationForDirection.lat, lastLocationForDirection.lon,
+                    latitude, longitude
+                );
+                if (newDirection) movementDirection = newDirection;
+            }
+            lastLocationForDirection = { lat: latitude, lon: longitude };
+            userLocation = { lat: latitude, lon: longitude, speed: (speed || 0) * 3.6 };
             updateLocationStatus(latitude, longitude, (speed || 0) * 3.6);
             updateCommunityPanel();
         },
@@ -929,40 +1172,75 @@ function updateLocationStatus(lat, lon, speedKmh) {
     isAtStation = minDist <= 120;
     const onHat = minDist < 400;
     isOnTrain = (speedKmh > 5 && onHat) || (speedKmh > 2 && minDist < 200);
-    if (userLocation && userLocation.lat) {
-        const lonDiff = lon - (userLocation.lon || lon);
-        if (Math.abs(lonDiff) > 0.0005) movementDirection = lonDiff > 0 ? 'east' : 'west';
-    }
-    if (movementDirection === 'east' && nearestIdx < CT_DURAKLAR.length - 1) {
+    
+    if (movementDirection === 'EAST' && nearestIdx < CT_DURAKLAR.length - 1) {
         nextStopObj = CT_DURAKLAR[nearestIdx + 1];
         const distToNext = haversine(lat, lon, nextStopObj.lat, nextStopObj.lon);
         if (speedKmh > 5) lastEtaMinutes = Math.max(1, Math.min(Math.round(distToNext / (speedKmh / 3.6) / 60), 20));
         else lastEtaMinutes = null;
-    } else if (movementDirection === 'west' && nearestIdx > 0) {
+    } else if (movementDirection === 'WEST' && nearestIdx > 0) {
         nextStopObj = CT_DURAKLAR[nearestIdx - 1];
         const distToNext = haversine(lat, lon, nextStopObj.lat, nextStopObj.lon);
         if (speedKmh > 5) lastEtaMinutes = Math.max(1, Math.min(Math.round(distToNext / (speedKmh / 3.6) / 60), 20));
         else lastEtaMinutes = null;
     } else if (nearestIdx < CT_DURAKLAR.length - 1) { nextStopObj = CT_DURAKLAR[nearestIdx + 1]; }
     else { nextStopObj = null; }
+    
     document.getElementById('locCurrentStop').textContent = nearestStop.ad;
     document.getElementById('locDistance').innerHTML = Math.round(minDist);
     const statusBadge = document.getElementById('statusBadge');
+    const directionText = movementDirection === 'EAST' ? '→ Doğu (Kayaş)' : movementDirection === 'WEST' ? '← Batı (Sincan)' : '';
+    
     if (isAtStation) statusBadge.innerHTML = '🚉 Duraktasınız';
-    else if (isOnTrain) statusBadge.innerHTML = `🚆 Trendesiniz · ${Math.round(speedKmh)} km/h ${movementDirection === 'east' ? '→' : '←'}`;
+    else if (isOnTrain) statusBadge.innerHTML = `🚆 Trendesiniz · ${Math.round(speedKmh)} km/h ${directionText}`;
     else if (minDist < 300) statusBadge.innerHTML = `📍 Durağa ${Math.round(minDist)}m kaldı`;
     else statusBadge.innerHTML = '📍 Hat dışı';
+    
     const nextPanel = document.getElementById('locationNextPanel');
     if (nextStopObj && nextPanel) {
         nextPanel.style.display = 'flex';
         document.getElementById('nextStopName').textContent = nextStopObj.ad;
         document.getElementById('nextEtaVal').innerHTML = (lastEtaMinutes && isOnTrain) ? `${lastEtaMinutes} dk` : '—';
     } else if (nextPanel) nextPanel.style.display = 'none';
+    
     if (STOPS_ALL.includes(nearestStop.ad) && curStop !== nearestStop.ad) { curStop = nearestStop.ad; renderAll(); }
     updateBigAlertCard();
     if (map && map.getContainer()) updateMapLocation(lat, lon);
-    if (isOnTrain && locationActive) startGpsBroadcast();
+    if (isOnTrain && locationActive && movementDirection) startGpsBroadcast();
     else stopGpsBroadcast();
+}
+
+// ════════════════════════════════════════════════════════
+//  GPS YAYINI
+// ════════════════════════════════════════════════════════
+async function sendLocationWithDirection(lat, lon, direction, speed) {
+    const { error } = await _db.from('train_locations').upsert({
+        lat: lat,
+        lon: lon,
+        uid: MY_UID,
+        direction: direction,
+        speed: speed || 0,
+        updated_at: new Date().toISOString()
+    }, { onConflict: 'uid' });
+    
+    if (error) console.error('GPS gönderim hatası:', error);
+    else {
+        console.log(`📍 Konum gönderildi: ${lat.toFixed(5)}, ${lon.toFixed(5)} | Yön: ${direction} | Hız: ${speed} km/h`);
+        if (currentStopObj) await checkTrainArrivalAtStop(currentStopObj.ad);
+    }
+}
+
+function startGpsBroadcast() {
+    if (broadcastInterval) return;
+    broadcastInterval = setInterval(async () => {
+        if (!isOnTrain || !userLocation || !locationActive || !movementDirection) return;
+        const direction = movementDirection === 'EAST' ? 'SK' : 'KS';
+        await sendLocationWithDirection(userLocation.lat, userLocation.lon, direction, userLocation.speed);
+    }, 8000);
+}
+
+function stopGpsBroadcast() {
+    if (broadcastInterval) { clearInterval(broadcastInterval); broadcastInterval = null; }
 }
 
 // ════════════════════════════════════════════════════════
@@ -1001,17 +1279,21 @@ function startSimulation() {
     showToast("🧪 Test simülasyonu başladı! Tren Sincan'dan Kayaş'a hareket ediyor...");
     if (!locationActive) { locationActive = true; updateLocationButtons(true); }
     const firstPoint = testPoints[0];
-    userLocation = { lat: firstPoint.lat, lon: firstPoint.lon, speed: firstPoint.speed / 3.6 };
+    userLocation = { lat: firstPoint.lat, lon: firstPoint.lon, speed: firstPoint.speed };
+    movementDirection = 'EAST';
     updateLocationStatus(firstPoint.lat, firstPoint.lon, firstPoint.speed);
     updateMapLocation(firstPoint.lat, firstPoint.lon);
     simulationInterval = setInterval(() => {
         currentSimIndex++;
-        if (currentSimIndex >= testPoints.length) { showToast("✅ Simülasyon tamamlandı! Tekrar başlıyor..."); currentSimIndex = 0; }
+        if (currentSimIndex >= testPoints.length) { 
+            showToast("✅ Simülasyon tamamlandı! Tekrar başlıyor..."); 
+            currentSimIndex = 0; 
+        }
         const point = testPoints[currentSimIndex];
-        userLocation = { lat: point.lat, lon: point.lon, speed: point.speed / 3.6 };
+        userLocation = { lat: point.lat, lon: point.lon, speed: point.speed };
         updateLocationStatus(point.lat, point.lon, point.speed);
         updateMapLocation(point.lat, point.lon);
-        console.log(`🚆 Tren: ${point.name} | Hız: ${point.speed} km/h`);
+        console.log(`🚆 Tren: ${point.name} | Hız: ${point.speed} km/h | Yön: EAST`);
     }, 3000);
     startGpsBroadcast();
 }
@@ -1023,156 +1305,46 @@ function stopSimulation() {
 }
 
 // ════════════════════════════════════════════════════════
-//  GPS YAYINI (ÇOKLU KULLANICI TOPLAMA)
-// ════════════════════════════════════════════════════════
-function getTrainPositions() {
-    const now = nowM();
-    const result = [];
-    const schedules = [
-        { schedule: SCHEDULE_SINCAN_TO_KAYAS, stops: CT_DURAKLAR, dir: 0, label: 'SK' },
-        { schedule: SCHEDULE_KAYAS_TO_SINCAN, stops: [...CT_DURAKLAR].reverse(), dir: 1, label: 'KS' }
-    ];
-    schedules.forEach(({ schedule, stops, dir, label }) => {
-        const terminalTimes = schedule[stops[0].ad];
-        if (!terminalTimes) return;
-        terminalTimes.forEach((kalkis, idx) => {
-            const kalkisM = toM(kalkis);
-            const sonDurak = stops[stops.length-1].ad;
-            const varisTimes = schedule[sonDurak];
-            if (!varisTimes || !varisTimes[idx]) return;
-            const varisM = toM(varisTimes[idx]);
-            if (now < kalkisM || now > varisM + 2) return;
-            for (let i = 0; i < stops.length - 1; i++) {
-                const saatA = schedule[stops[i].ad]?.[idx];
-                const saatB = schedule[stops[i+1].ad]?.[idx];
-                if (!saatA || !saatB) continue;
-                const snA = toM(saatA), snB = toM(saatB);
-                if (now >= snA && now < snB) {
-                    const t = Math.min(1, Math.max(0, (now - snA) / (snB - snA)));
-                    const lat = stops[i].lat + t * (stops[i+1].lat - stops[i].lat);
-                    const lon = stops[i].lon + t * (stops[i+1].lon - stops[i].lon);
-                    const onlineKey = label + '_' + kalkis;
-                    const onlineData = window.__onlineTrains[onlineKey];
-                    const isOnline = onlineData && (Date.now() - onlineData.lastSeen) < 45000;
-                    result.push({ key: label + '_' + idx, dir, seferSaati: kalkis, lat: isOnline ? onlineData.lat : lat, lon: isOnline ? onlineData.lon : lon, isOnline, label: dir===0?'Sincan→Kayaş':'Kayaş→Sincan' });
-                    break;
-                }
-            }
-        });
-    });
-    return result;
-}
-
-function trainIcon(isOnline, dir, userCount = 1) {
-    const bg = isOnline ? '#10b981' : '#3b82f6';
-    const arrow = dir === 0 ? '→' : '←';
-    const size = isOnline ? Math.min(30, 18 + userCount) : 18;
-    const fontSize = isOnline ? Math.min(12, 8 + userCount) : 10;
-    return L.divIcon({ 
-        className: '', 
-        html: `<div style="background:${bg};color:#fff;font-size:${fontSize}px;font-weight:800;padding:4px 8px;border-radius:20px;border:2px solid white;white-space:nowrap;">🚆${arrow}${isOnline ? (userCount > 1 ? ` ${userCount}` : '') : ''}</div>`, 
-        iconSize: [size, size], 
-        iconAnchor: [size/2, size/2] 
-    });
-}
-
-function updateTrainMarkers() {
-    if (!map) return;
-    const aktif = getTrainPositions();
-    const aktifKeys = new Set(aktif.map(t => t.key));
-    Object.keys(trainMarkers).forEach(k => { if (!aktifKeys.has(k)) { map.removeLayer(trainMarkers[k]); delete trainMarkers[k]; } });
-    aktif.forEach(train => {
-        const userCount = train.isOnline ? 1 : 0;
-        const popupHtml = `<div><b>🚆 ${train.label}</b><br>⏱ Sefer: ${train.seferSaati}<br><span style="background:${train.isOnline?'#10b981':'#3b82f6'};color:white;padding:2px 6px;border-radius:10px;font-size:10px">${train.isOnline?'🟢 Canlı GPS (ortalama)':'🔵 Tarifeden'}</span></div>`;
-        if (trainMarkers[train.key]) {
-            trainMarkers[train.key].setLatLng([train.lat, train.lon]);
-            trainMarkers[train.key].setIcon(trainIcon(train.isOnline, train.dir, userCount));
-        } else {
-            trainMarkers[train.key] = L.marker([train.lat, train.lon], { icon: trainIcon(train.isOnline, train.dir, userCount) }).addTo(map).bindPopup(popupHtml);
-        }
-    });
-}
-
-async function getOtherUsersOnSameTrain(direction, seferSaati) {
-    const { data, error } = await _db
-        .from('train_locations')
-        .select('lat, lon, uid, updated_at')
-        .eq('direction', direction)
-        .eq('sefer_saati', seferSaati)
-        .gte('updated_at', new Date(Date.now() - 120000).toISOString());
-    if (error) { console.error('Diğer kullanıcılar alınamadı:', error); return []; }
-    return data.filter(u => u.uid !== MY_UID);
-}
-
-function calculateWeightedAverage(users, myLocation) {
-    if (!users.length) return { lat: myLocation.lat, lon: myLocation.lon, userCount: 1 };
-    let totalLat = myLocation.lat, totalLon = myLocation.lon, totalWeight = 1;
-    users.forEach(user => { totalLat += user.lat; totalLon += user.lon; totalWeight++; });
-    return { lat: totalLat / totalWeight, lon: totalLon / totalWeight, userCount: totalWeight };
-}
-
-async function sendLocationWithGroup(direction, seferSaati, lat, lon) {
-    const { error } = await _db.from('train_locations').upsert({
-        direction: direction, sefer_saati: seferSaati, lat: lat, lon: lon, uid: MY_UID, updated_at: new Date().toISOString()
-    }, { onConflict: 'direction,sefer_saati' });
-    if (error) console.error('GPS gönderim hatası:', error);
-}
-
-function startGpsBroadcast() {
-    if (broadcastInterval) return;
-    broadcastInterval = setInterval(async () => {
-        if (!isOnTrain || !userLocation || !locationActive) return;
-        const activeTrains = getTrainPositions().filter(t => !t.isOnline);
-        if (!activeTrains.length) return;
-        let nearest = null, minDist = Infinity;
-        activeTrains.forEach(t => {
-            const d = haversine(userLocation.lat, userLocation.lon, t.lat, t.lon);
-            if (d < minDist) { minDist = d; nearest = t; }
-        });
-        if (!nearest || minDist > 600) return;
-        const direction = nearest.dir === 0 ? 'SK' : 'KS';
-        const seferSaati = nearest.seferSaati;
-        await sendLocationWithGroup(direction, seferSaati, userLocation.lat, userLocation.lon);
-        const otherUsers = await getOtherUsersOnSameTrain(direction, seferSaati);
-        const avgLocation = calculateWeightedAverage(otherUsers, userLocation);
-        if (map && avgLocation && otherUsers.length > 0) {
-            const trainKey = nearest.key;
-            if (trainMarkers[trainKey]) {
-                trainMarkers[trainKey].setLatLng([avgLocation.lat, avgLocation.lon]);
-                trainMarkers[trainKey].setIcon(trainIcon(true, nearest.dir, avgLocation.userCount));
-                const popupContent = `<div><b>🚆 ${nearest.label}</b><br>⏱ Sefer: ${seferSaati}<br><span style="background:#10b981;color:white;padding:2px 6px;border-radius:10px">🟢 ${avgLocation.userCount} kişi canlı GPS paylaşıyor</span></div>`;
-                trainMarkers[trainKey].getPopup()?.setContent(popupContent);
-            }
-            if (otherUsers.length > 0) console.log(`🚆 Aynı trende ${otherUsers.length + 1} kullanıcı var. Ortalama konum hesaplandı.`);
-        }
-    }, 8000);
-}
-
-function stopGpsBroadcast() {
-    if (broadcastInterval) { clearInterval(broadcastInterval); broadcastInterval = null; }
-}
-
-// ════════════════════════════════════════════════════════
 //  HARİTA
 // ════════════════════════════════════════════════════════
 function initMap() {
     if (map) return;
     const container = document.getElementById('mapContainer');
     if (!container) return;
+    
     map = L.map('mapContainer').setView([39.93, 32.78], 11);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution: '&copy; OSM &amp; CartoDB', subdomains: 'abcd' }).addTo(map);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { 
+        attribution: '&copy; OSM &amp; CartoDB', 
+        subdomains: 'abcd' 
+    }).addTo(map);
+    
+    // Hat çizgisi
     const routeCoords = CT_DURAKLAR.map(s => [s.lat, s.lon]);
     L.polyline(routeCoords, { color: 'rgba(59,130,246,0.5)', weight: 3, dashArray: '6 4' }).addTo(map);
+    
+    // Durak markerları
     CT_DURAKLAR.forEach(stop => {
         const isTerminal = (stop.ad === 'Sincan' || stop.ad === 'Kayaş');
         const color = isTerminal ? '#f87171' : '#3b82f6';
-        L.marker([stop.lat, stop.lon], { icon: L.divIcon({ html: `<div style="background:${color};width:${isTerminal?14:10}px;height:${isTerminal?14:10}px;border-radius:50%;border:2px solid white;"></div>`, iconSize: [isTerminal?14:10, isTerminal?14:10], iconAnchor: [isTerminal?7:5, isTerminal?7:5] }) }).addTo(map).bindPopup(`<b>${stop.ad}</b><br><button onclick="selectStopFromMap('${stop.ad}')" style="margin-top:6px;padding:4px 10px;border-radius:6px;background:#3b82f6;color:#fff;cursor:pointer">Saatleri Gör</button>`);
+        L.marker([stop.lat, stop.lon], { 
+            icon: L.divIcon({ 
+                html: `<div style="background:${color};width:${isTerminal?14:10}px;height:${isTerminal?14:10}px;border-radius:50%;border:2px solid white;"></div>`, 
+                iconSize: [isTerminal?14:10, isTerminal?14:10], 
+                iconAnchor: [isTerminal?7:5, isTerminal?7:5] 
+            }) 
+        }).addTo(map).bindPopup(`<b>${stop.ad}</b><br><button onclick="selectStopFromMap('${stop.ad}')" style="margin-top:6px;padding:4px 10px;border-radius:6px;background:#3b82f6;color:#fff;cursor:pointer">Saatleri Gör</button>`);
     });
-    updateTrainMarkers();
+    
+    // Hemen kullanıcıları getir
+    setTimeout(() => {
+        if (curPageIdx === 2 && map) {
+            startPollingUsers();
+        }
+    }, 1000);
+    
     if (userLocation) updateMapLocation(userLocation.lat, userLocation.lon);
     setTimeout(() => map?.invalidateSize(), 200);
 }
-
 function updateMapLocation(lat, lon) {
     if (!map) return;
     if (userMarker) { userMarker.setLatLng([lat, lon]); }
@@ -1182,7 +1354,7 @@ function updateMapLocation(lat, lon) {
 function selectStopFromMap(name) { curStop = name; renderAll(); showPage('saatler', 0); }
 
 // ════════════════════════════════════════════════════════
-//  BİLDİRİM MODAL
+//  BİLDİRİM MODAL (MEVCUT)
 // ════════════════════════════════════════════════════════
 function openRpModal(station, preType) {
     _rp = { station: station||curStop, type:preType||null, seferSaati:null, dir: curDir };
@@ -1469,7 +1641,7 @@ function showPage(n, i) {
     if (inner) inner.style.transform = `translateX(-${i * 100}%)`;
     document.querySelectorAll('.tab').forEach((t, ti) => t.classList.toggle('active', ti === i));
     if (n === 'duraklar') buildStopList();
-    if (n === 'harita') { initMap(); if (userLocation) updateMapLocation(userLocation.lat, userLocation.lon); updateCommunityPanel(); }
+    if (n === 'harita') { initMap(); if (userLocation) updateMapLocation(userLocation.lat, userLocation.lon); updateCommunityPanel(); updateOtherUsersOnMap(); }
     if (n === 'fav') buildFavList();
     if (n === 'ariza') buildArizaPage();
 }
@@ -1495,9 +1667,80 @@ function tickClock() {
 }
 
 // ════════════════════════════════════════════════════════
-//  CSS ANİMASYON
+//  SUPABASE BİLDİRİM FONKSİYONLARI
 // ════════════════════════════════════════════════════════
-(function() { const s = document.createElement('style'); s.textContent = `@keyframes trainPulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(1.4)} }`; document.head.appendChild(s); })();
+function startSupabaseListener() {
+    // Bildirimler için polling (realtime yoksa)
+    fetchReports();
+    setInterval(fetchReports, 10000);
+    
+    // Konumlar için polling başlat
+    startPollingUsers();
+    
+    // Her 10 saniyede bir yakın kullanıcıları kontrol et
+    setInterval(() => {
+        if (locationActive && userLocation) {
+            checkNearbyUsersPolling();
+        }
+    }, 10000);
+}
+async function fetchReports() {
+    const since = new Date(Date.now() - 2*60*60*1000).toISOString();
+    const { data } = await _db.from('reports').select('*').gte('updated_at', since).order('updated_at', { ascending: false });
+    if (!data) return;
+    window.__supaReports = {};
+    const delay = {}, breakdown = {};
+    data.forEach(r => {
+        if ((r.retler||0) >= (r.onaylar||0) + 2) return;
+        window.__supaReports[r.id] = r;
+        const st = r.istasyon;
+        const bucket = r.tip === 'arıza' ? breakdown : delay;
+        if (!bucket[st]) bucket[st] = { count:0, onaylar:0 };
+        bucket[st].count++; bucket[st].onaylar += (r.onaylar||0);
+    });
+    communityReports.delay = delay;
+    communityReports.breakdown = breakdown;
+    updateBigAlertCard();
+    updateCommunityPanel();
+    if (curPageIdx === 4) buildArizaPage();
+}
+
+window.sbSend = async function({ tip, istasyon, seferSaati, hat, aciklama, gec_dk }) {
+    const dayKey = 'bkr_day_' + new Date().toDateString();
+    const cnt = parseInt(localStorage.getItem(dayKey)||'0');
+    if (cnt >= 10) { showToast("🚫 Günlük 10 bildirim limitine ulaştınız"); return false; }
+    const ck = (MY_UID+'_'+hat+'_'+seferSaati).replace(/[^a-zA-Z0-9_]/g,'_');
+    const { data: ex } = await _db.from('reports').select('id').eq('composite_key', ck).maybeSingle();
+    if (ex) {
+        await _db.from('reports').update({ tip, aciklama, gec_dk: gec_dk||null, updated_at: new Date().toISOString() }).eq('id', ex.id);
+        return 'updated';
+    } else {
+        const { error } = await _db.from('reports').insert({
+            uid: MY_UID, composite_key: ck, tip, istasyon, sefer_saati: seferSaati, hat,
+            aciklama: (aciklama||'').slice(0,200), gec_dk: gec_dk||null,
+            onaylar:0, retler:0, onaylayanlar:[], reddedenler:[],
+            created_at: new Date().toISOString(), updated_at: new Date().toISOString()
+        });
+        if (error) { console.error(error); return false; }
+        localStorage.setItem(dayKey, cnt+1);
+        return 'created';
+    }
+};
+
+window.sbVote = async function(id, voteType) {
+    const { data:r } = await _db.from('reports').select('*').eq('id', id).single();
+    if (!r) return;
+    if (r.uid === MY_UID) { showToast("🚫 Kendi bildiriminize oy veremezsiniz"); return; }
+    const oy = r.onaylayanlar||[], ret = r.reddedenler||[];
+    if (oy.includes(MY_UID)||ret.includes(MY_UID)) { showToast("⚠️ Zaten oy verdiniz"); return; }
+    if (voteType==='onay') {
+        await _db.from('reports').update({ onaylar:(r.onaylar||0)+1, onaylayanlar:[...oy,MY_UID], updated_at:new Date().toISOString() }).eq('id',id);
+        showToast("✅ Onaylandı");
+    } else {
+        await _db.from('reports').update({ retler:(r.retler||0)+1, reddedenler:[...ret,MY_UID], updated_at:new Date().toISOString() }).eq('id',id);
+        showToast("👎 Reddedildi");
+    }
+};
 
 // ════════════════════════════════════════════════════════
 //  BAŞLATMA
@@ -1507,12 +1750,13 @@ setInterval(tickClock, 1000);
 tickClock();
 renderAll();
 startSupabaseListener();
+startPeriodicTrainCheck();
 setInterval(() => {
     buildNextTrain();
     buildTrainList();
     if (curPageIdx === 3) buildFavList();
     if (curPageIdx === 4) buildArizaPage();
-    if (curPageIdx === 2 && map) updateTrainMarkers();
+    if (curPageIdx === 2 && map) updateOtherUsersOnMap();
     if (locationActive) { updateBigAlertCard(); updateCommunityPanel(); }
 }, 5000);
 </script>
