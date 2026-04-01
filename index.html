@@ -60,7 +60,6 @@ body {
     min-height: 100vh;
 }
 
-/* Header */
 .header {
     background: linear-gradient(175deg, #0a1f50 0%, #071535 60%, var(--bg) 100%);
     padding: 10px 16px;
@@ -143,7 +142,6 @@ body {
 .hdr-day.ws { background: rgba(245,158,11,0.15); border: 1px solid rgba(245,158,11,0.3); color: var(--amber2); }
 .hdr-date { font-size: 10px; color: var(--text3); }
 
-/* Pages */
 .page { display: none; }
 .page.active { display: block; }
 
@@ -151,7 +149,6 @@ body {
 .pages-swipe-inner { display: flex; transition: transform .3s cubic-bezier(.4,0,.2,1); will-change: transform; }
 .pages-swipe-inner .page { display: block !important; min-width: 100%; width: 100%; flex-shrink: 0; }
 
-/* Tab Bar */
 .tab-bar {
     position: fixed;
     bottom: 0;
@@ -181,7 +178,6 @@ body {
 .tab.active { color: var(--blue3); border-top-color: var(--blue2); }
 .tab-icon { font-size: 19px; display: block; margin-bottom: 2px; }
 
-/* Stop Hero */
 .stop-hero {
     padding: 14px 16px;
     background: var(--bg2);
@@ -209,7 +205,6 @@ body {
 .tag-term { background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color: var(--red2); }
 .tag-fav { background: rgba(245,158,11,0.2); border: 1px solid rgba(245,158,11,0.4); color: var(--amber2); }
 
-/* Direction Buttons */
 .dir-wrap {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -239,7 +234,6 @@ body {
     color: var(--text3);
 }
 
-/* Route */
 .route-outer { padding: 4px 16px; overflow-x: auto; scrollbar-width: none; }
 .route-outer::-webkit-scrollbar { display: none; }
 .route-inner { display: flex; align-items: flex-start; min-width: max-content; padding: 4px 0; }
@@ -254,7 +248,6 @@ body {
 .rl { font-size: 9px; font-weight: 600; color: var(--text3); margin-top: 5px; text-align: center; max-width: 48px; }
 .rl.a { color: var(--amber); font-size: 10px; font-weight: 800; }
 
-/* Next Train Card */
 .nt-wrap { margin: 8px 16px; border-radius: var(--r); overflow: hidden; }
 .nt-card { padding: 16px 18px; border: 1px solid; border-radius: var(--r); }
 .nt-card.ok { background: linear-gradient(135deg,rgba(5,30,18,.95),rgba(6,40,24,.95)); border-color: rgba(16,185,129,.4); }
@@ -270,20 +263,17 @@ body {
 .nt-mins.soon { color: var(--amber2); }
 .nt-mins.urgent { color: var(--red2); }
 
-/* Train List */
 .train-list { padding: 0 16px; display: flex; flex-direction: column; gap: 6px; }
 .tc { border-radius: var(--r2); padding: 12px 14px; border: 1px solid var(--border); background: var(--card); cursor: pointer; }
 .tc.next { background: rgba(16,185,129,.08); border-color: rgba(16,185,129,.3); border-left: 4px solid var(--green); }
 .tc-row { display: flex; align-items: center; justify-content: space-between; }
 .tc-time { font-size: 24px; font-weight: 900; font-variant-numeric: tabular-nums; }
-.tc-time.n { color: var(--green2); }
 .tc-badge { padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 700; }
 .tc-badge.urgent { background: rgba(239,68,68,.2); color: var(--red2); }
 .tc-badge.soon { background: rgba(245,158,11,.2); color: var(--amber2); }
 .tc-badge.past { background: rgba(71,85,105,0.2); color: var(--text3); }
 .show-more-btn { width: calc(100% - 32px); margin: 6px 16px; background: rgba(37,99,235,.08); border: 1px dashed rgba(37,99,235,.3); border-radius: var(--r2); padding: 12px; color: var(--blue3); font-size: 13px; font-weight: 600; cursor: pointer; display: none; }
 
-/* Location Card */
 .loc-toggle-bar {
     display: flex;
     align-items: center;
@@ -353,7 +343,6 @@ body {
 .next-stop { font-size: 16px; font-weight: 800; color: var(--amber2); }
 .next-eta-val { font-size: 24px; font-weight: 900; color: var(--green2); }
 
-/* Alert Card */
 .alert-card {
     margin: 8px 16px;
     border-radius: var(--r);
@@ -380,7 +369,6 @@ body {
 .confirm-dot.majority { background: var(--green2); animation: pulseDot 1s infinite; }
 @keyframes pulseDot { 0%,100%{transform:scale(1)}50%{transform:scale(1.3)} }
 
-/* Community Panel */
 .community-panel { background: var(--card2); border: 1px solid var(--border); border-radius: var(--r2); overflow: hidden; margin: 8px 16px; }
 .community-header { padding: 12px 16px; background: rgba(37,99,235,0.15); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
 .community-title { font-size: 13px; font-weight: 700; color: var(--blue3); flex: 1; }
@@ -398,11 +386,9 @@ body {
 .vote-btn.onay { border-color: rgba(16,185,129,0.5); color: var(--green2); }
 .vote-btn.ret { border-color: rgba(239,68,68,0.5); color: var(--red2); }
 
-/* Map */
 .map-container { height: 50vh; min-height: 350px; width: 100%; border-radius: var(--r2); overflow: hidden; margin: 8px 16px; }
 .leaflet-container { background: #0a1225; }
 
-/* Favorites */
 .fav-list { padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
 .fav-item { background: rgba(245,158,11,.08); border: 1px solid rgba(245,158,11,.25); border-radius: var(--r2); overflow: hidden; }
 .fav-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; cursor: pointer; background: rgba(245,158,11,.1); }
@@ -418,7 +404,6 @@ body {
 .fav-time-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--card2); border-radius: var(--r3); }
 .fav-time { font-size: 14px; font-weight: 700; color: var(--green2); }
 
-/* Modal */
 .rp-modal {
     display: none;
     position: fixed;
@@ -448,7 +433,6 @@ body {
 .train-pill.sel { background: rgba(245,158,11,0.2); border-color: var(--amber2); color: var(--amber2); }
 .gecikme-select { width: 100%; background: var(--bg3); border: 1px solid var(--border); border-radius: var(--r3); padding: 10px 12px; color: var(--text); }
 
-/* Utility */
 .empty { color: var(--text3); font-size: 13px; padding: 3rem 0; text-align: center; }
 .page-header { padding: 12px 16px; font-size: 12px; font-weight: 700; color: var(--text3); text-transform: uppercase; }
 .ct-toast {
@@ -552,10 +536,9 @@ body {
                             <div class="next-eta-val" id="nextEtaVal">—</div>
                         </div>
                         
-                        <!-- TEST SİMÜLASYON BUTONLARI -->
                         <div style="margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); display: flex; gap: 8px;">
                             <button onclick="startSimulation()" style="background: rgba(245,158,11,0.2); border: 1px solid var(--amber2); border-radius: 12px; padding: 8px 12px; font-size: 11px; font-weight: 600; color: var(--amber2); cursor: pointer; flex: 1;">
-                                🧪 Test Modu (Simülasyon)
+                                🧪 Test Modu
                             </button>
                             <button onclick="stopSimulation()" style="background: rgba(71,85,105,0.3); border: 1px solid var(--border); border-radius: 12px; padding: 8px 12px; font-size: 11px; font-weight: 600; color: var(--text3); cursor: pointer; flex: 1;">
                                 ⏹️ Durdur
@@ -598,7 +581,7 @@ body {
                 <div id="mapContainer" class="map-container"></div>
                 <div style="display:flex; gap:10px; padding:0 16px 8px; flex-wrap:wrap">
                     <div style="display:flex; align-items:center; gap:5px; font-size:11px"><div style="width:10px;height:10px;border-radius:50%;background:#3b82f6"></div>Tarifeden (simüle)</div>
-                    <div style="display:flex; align-items:center; gap:5px; font-size:11px"><div style="width:10px;height:10px;border-radius:50%;background:#10b981"></div>Canlı GPS (yolcu)</div>
+                    <div style="display:flex; align-items:center; gap:5px; font-size:11px"><div style="width:10px;height:10px;border-radius:50%;background:#10b981"></div>Canlı GPS (ortalama konum)</div>
                     <div style="display:flex; align-items:center; gap:5px; font-size:11px"><div style="width:10px;height:10px;border-radius:50%;background:#10b981;border:2px solid #fff"></div>Siz buradasınız</div>
                 </div>
                 
@@ -706,31 +689,27 @@ const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsI
 const _db = supabase.createClient(SUPA_URL, SUPA_KEY);
 
 // ════════════════════════════════════════════════════════
-//  DURAKLAR VE TARİFELER (TAM BAŞKENTRAY TARİFESİ)
+//  DURAKLAR VE TARİFELER
 // ════════════════════════════════════════════════════════
 const STOPS_ALL = ["Sincan","Lale","Elvankent","Eryaman YHT","Özgüneş","Etimesgut","Hava Durağı","Yıldırım","Behiçbey","Motor Durağı","Gazi","Gazi Mahallesi","Hipodrom","Ankara Gar","Yenişehir","Kurtuluş","Cebeci","Demirlibahçe","Saimekadın","Mamak","Bağderesi","Üreğil","Köstence","Kayaş"];
 
-// Sincan → Kayaş saatleri (kısa versiyon - ana duraklar için örnek)
 const SCHEDULE_SINCAN_TO_KAYAS = {
     "Sincan": ["06:00","06:30","07:00","07:30","08:00","08:30","09:00","10:00","11:00","12:00","13:00","14:00","15:00","16:00","17:00","18:00","19:00","20:00","21:00","22:00","23:00"],
     "Ankara Gar": ["06:29","06:59","07:29","07:59","08:29","08:59","09:29","10:29","11:29","12:29","13:29","14:29","15:29","16:29","17:29","18:29","19:29","20:29","21:29","22:29","23:29"],
     "Kayaş": ["06:49","07:19","07:49","08:19","08:49","09:19","09:49","10:49","11:49","12:49","13:49","14:49","15:49","16:49","17:49","18:49","19:49","20:49","21:49","22:49","23:49"]
 };
 
-// Kayaş → Sincan saatleri
 const SCHEDULE_KAYAS_TO_SINCAN = {
     "Kayaş": ["06:00","06:30","07:00","07:30","08:00","08:30","09:00","10:00","11:00","12:00","13:00","14:00","15:00","16:00","17:00","18:00","19:00","20:00","21:00","22:00","23:00"],
     "Ankara Gar": ["06:20","06:50","07:20","07:50","08:20","08:50","09:20","10:20","11:20","12:20","13:20","14:20","15:20","16:20","17:20","18:20","19:20","20:20","21:20","22:20","23:20"],
     "Sincan": ["06:49","07:19","07:49","08:19","08:49","09:19","09:49","10:49","11:49","12:49","13:49","14:49","15:49","16:49","17:49","18:49","19:49","20:49","21:49","22:49","23:49"]
 };
 
-// Tüm duraklar için saatleri doldur
 STOPS_ALL.forEach(stop => {
     if (!SCHEDULE_SINCAN_TO_KAYAS[stop]) SCHEDULE_SINCAN_TO_KAYAS[stop] = SCHEDULE_SINCAN_TO_KAYAS["Sincan"];
     if (!SCHEDULE_KAYAS_TO_SINCAN[stop]) SCHEDULE_KAYAS_TO_SINCAN[stop] = SCHEDULE_KAYAS_TO_SINCAN["Kayaş"];
 });
 
-// DURAK KOORDİNATLARI
 const CT_DURAKLAR = [
     {id:0, ad:"Sincan", lat:39.964687, lon:32.583989},
     {id:1, ad:"Lale", lat:39.961568, lon:32.598764},
@@ -784,7 +763,9 @@ let simulationInterval = null;
 let currentSimIndex = 0;
 let _rp = { station: null, type: null, seferSaati: null, dir: null };
 let trainMarkers = {};
+let broadcastInterval = null;
 window.__onlineTrains = {};
+window.__supaReports = {};
 
 // ════════════════════════════════════════════════════════
 //  YARDIMCI FONKSİYONLAR
@@ -1042,10 +1023,8 @@ function stopSimulation() {
 }
 
 // ════════════════════════════════════════════════════════
-//  GPS YAYINI (SUPABASE)
+//  GPS YAYINI (ÇOKLU KULLANICI TOPLAMA)
 // ════════════════════════════════════════════════════════
-let broadcastInterval = null;
-
 function getTrainPositions() {
     const now = nowM();
     const result = [];
@@ -1084,10 +1063,17 @@ function getTrainPositions() {
     return result;
 }
 
-function trainIcon(isOnline, dir) {
+function trainIcon(isOnline, dir, userCount = 1) {
     const bg = isOnline ? '#10b981' : '#3b82f6';
     const arrow = dir === 0 ? '→' : '←';
-    return L.divIcon({ className: '', html: `<div style="background:${bg};color:#fff;font-size:10px;font-weight:800;padding:3px 6px;border-radius:10px;border:2px solid white;white-space:nowrap;">🚆${arrow}${isOnline ? '<span style="display:inline-block;width:5px;height:5px;background:#fff;border-radius:50%;margin-left:3px;animation:trainPulse 1s infinite"></span>' : ''}</div>`, iconSize: [null, null], iconAnchor: [18,12] });
+    const size = isOnline ? Math.min(30, 18 + userCount) : 18;
+    const fontSize = isOnline ? Math.min(12, 8 + userCount) : 10;
+    return L.divIcon({ 
+        className: '', 
+        html: `<div style="background:${bg};color:#fff;font-size:${fontSize}px;font-weight:800;padding:4px 8px;border-radius:20px;border:2px solid white;white-space:nowrap;">🚆${arrow}${isOnline ? (userCount > 1 ? ` ${userCount}` : '') : ''}</div>`, 
+        iconSize: [size, size], 
+        iconAnchor: [size/2, size/2] 
+    });
 }
 
 function updateTrainMarkers() {
@@ -1096,16 +1082,40 @@ function updateTrainMarkers() {
     const aktifKeys = new Set(aktif.map(t => t.key));
     Object.keys(trainMarkers).forEach(k => { if (!aktifKeys.has(k)) { map.removeLayer(trainMarkers[k]); delete trainMarkers[k]; } });
     aktif.forEach(train => {
-        const popupHtml = `<div><b>🚆 ${train.label}</b><br>⏱ Sefer: ${train.seferSaati}<br><span style="background:${train.isOnline?'#10b981':'#3b82f6'};color:white;padding:2px 6px;border-radius:10px;font-size:10px">${train.isOnline?'🟢 Canlı GPS':'🔵 Tarifeden'}</span></div>`;
+        const userCount = train.isOnline ? 1 : 0;
+        const popupHtml = `<div><b>🚆 ${train.label}</b><br>⏱ Sefer: ${train.seferSaati}<br><span style="background:${train.isOnline?'#10b981':'#3b82f6'};color:white;padding:2px 6px;border-radius:10px;font-size:10px">${train.isOnline?'🟢 Canlı GPS (ortalama)':'🔵 Tarifeden'}</span></div>`;
         if (trainMarkers[train.key]) {
             trainMarkers[train.key].setLatLng([train.lat, train.lon]);
-            trainMarkers[train.key].setIcon(trainIcon(train.isOnline, train.dir));
+            trainMarkers[train.key].setIcon(trainIcon(train.isOnline, train.dir, userCount));
         } else {
-            trainMarkers[train.key] = L.marker([train.lat, train.lon], { icon: trainIcon(train.isOnline, train.dir) }).addTo(map).bindPopup(popupHtml);
+            trainMarkers[train.key] = L.marker([train.lat, train.lon], { icon: trainIcon(train.isOnline, train.dir, userCount) }).addTo(map).bindPopup(popupHtml);
         }
     });
-    const countEl = document.getElementById('trainCountBadge');
-    if (countEl) countEl.textContent = aktif.length + ' tren';
+}
+
+async function getOtherUsersOnSameTrain(direction, seferSaati) {
+    const { data, error } = await _db
+        .from('train_locations')
+        .select('lat, lon, uid, updated_at')
+        .eq('direction', direction)
+        .eq('sefer_saati', seferSaati)
+        .gte('updated_at', new Date(Date.now() - 120000).toISOString());
+    if (error) { console.error('Diğer kullanıcılar alınamadı:', error); return []; }
+    return data.filter(u => u.uid !== MY_UID);
+}
+
+function calculateWeightedAverage(users, myLocation) {
+    if (!users.length) return { lat: myLocation.lat, lon: myLocation.lon, userCount: 1 };
+    let totalLat = myLocation.lat, totalLon = myLocation.lon, totalWeight = 1;
+    users.forEach(user => { totalLat += user.lat; totalLon += user.lon; totalWeight++; });
+    return { lat: totalLat / totalWeight, lon: totalLon / totalWeight, userCount: totalWeight };
+}
+
+async function sendLocationWithGroup(direction, seferSaati, lat, lon) {
+    const { error } = await _db.from('train_locations').upsert({
+        direction: direction, sefer_saati: seferSaati, lat: lat, lon: lon, uid: MY_UID, updated_at: new Date().toISOString()
+    }, { onConflict: 'direction,sefer_saati' });
+    if (error) console.error('GPS gönderim hatası:', error);
 }
 
 function startGpsBroadcast() {
@@ -1120,14 +1130,21 @@ function startGpsBroadcast() {
             if (d < minDist) { minDist = d; nearest = t; }
         });
         if (!nearest || minDist > 600) return;
-        await _db.from('train_locations').upsert({
-            direction: nearest.dir === 0 ? 'SK' : 'KS',
-            sefer_saati: nearest.seferSaati,
-            lat: userLocation.lat,
-            lon: userLocation.lon,
-            uid: MY_UID,
-            updated_at: new Date().toISOString()
-        }, { onConflict: 'direction,sefer_saati' });
+        const direction = nearest.dir === 0 ? 'SK' : 'KS';
+        const seferSaati = nearest.seferSaati;
+        await sendLocationWithGroup(direction, seferSaati, userLocation.lat, userLocation.lon);
+        const otherUsers = await getOtherUsersOnSameTrain(direction, seferSaati);
+        const avgLocation = calculateWeightedAverage(otherUsers, userLocation);
+        if (map && avgLocation && otherUsers.length > 0) {
+            const trainKey = nearest.key;
+            if (trainMarkers[trainKey]) {
+                trainMarkers[trainKey].setLatLng([avgLocation.lat, avgLocation.lon]);
+                trainMarkers[trainKey].setIcon(trainIcon(true, nearest.dir, avgLocation.userCount));
+                const popupContent = `<div><b>🚆 ${nearest.label}</b><br>⏱ Sefer: ${seferSaati}<br><span style="background:#10b981;color:white;padding:2px 6px;border-radius:10px">🟢 ${avgLocation.userCount} kişi canlı GPS paylaşıyor</span></div>`;
+                trainMarkers[trainKey].getPopup()?.setContent(popupContent);
+            }
+            if (otherUsers.length > 0) console.log(`🚆 Aynı trende ${otherUsers.length + 1} kullanıcı var. Ortalama konum hesaplandı.`);
+        }
     }, 8000);
 }
 
